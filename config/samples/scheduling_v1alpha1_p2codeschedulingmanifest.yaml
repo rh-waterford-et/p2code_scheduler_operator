@@ -1,0 +1,38 @@
+apiVersion: scheduling.p2code.eu/v1alpha1
+kind: P2CodeSchedulingManifest
+metadata:
+  labels:
+    app.kubernetes.io/name: p2code-scheduler
+    app.kubernetes.io/managed-by: kustomize
+  name: p2codeschedulingmanifest-sample
+spec:
+  globalAnnotations: 
+    - p2code.filter.region=EU
+    - p2code.filter.k8sdistribution=openshift
+  workloadAnnotations:
+    - name: deploymentA
+      annotations: 
+      - p2code.filter.p2CodeEdge=true
+      - p2code.filter.gpu=true
+  manifests:
+    - apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: deploymentA
+        namespace: default
+      spec:
+        selector:
+          matchLabels:
+            app: app1
+        template:
+          metadata:
+            labels:
+              app: app1
+          spec:
+            containers:
+              - name: app1
+                image: quay.io/app1
+                resources:
+                  requests:
+                    memory: "200Mi"
+                    cpu: "250m"     

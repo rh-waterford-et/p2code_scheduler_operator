@@ -1,0 +1,32 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - scheduling.p2code.eu
+  resources:
+  - p2codeschedulingmanifests
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - scheduling.p2code.eu
+  resources:
+  - p2codeschedulingmanifests/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - scheduling.p2code.eu
+  resources:
+  - p2codeschedulingmanifests/status
+  verbs:
+  - get
+  - patch
+  - update
