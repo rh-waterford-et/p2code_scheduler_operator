@@ -18,9 +18,12 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -64,48 +67,92 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	log.Info("Contents of P2CodeSchedulingManifest", "manifest", p2CodeSchedulingManifest)
 
-	placement := r.generatePlacement(p2CodeSchedulingManifest)
-
-	if err = r.Create(ctx, placement); err != nil {
-		log.Error(err, "Failed to create Placement")
+	placements, err := r.generatePlacementForManifests(p2CodeSchedulingManifest)
+	if err != nil {
+		log.Error(err, "Failed to generate Placements for manifests")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Placement", "placement spec", placement.Spec)
+	for _, placement := range placements {
+		if err = r.Create(ctx, placement); err != nil {
+			log.Error(err, "Failed to create Placement")
+			return ctrl.Result{}, err
+		}
+
+		log.Info("Placement", "placement spec", placement.Spec)
+	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) generatePlacement(schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) *ocmv1beta1.Placement {
-	numClusters := int32(1)
-	clusterLabels := parseClusterLabels(schedulingManifest.Spec.GlobalAnnotations)
+func (r *P2CodeSchedulingManifestReconciler) generatePlacementForManifests(schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]*ocmv1beta1.Placement, error) {
+	var placementRules map[string]string
+	var numClusters int32 = 1
+	placements := []*ocmv1beta1.Placement{}
+	globalAnnotations := parseAnnotations(schedulingManifest.Spec.GlobalAnnotations)
+	modifiedWorkloads := listModifiedWorkloads(schedulingManifest.Spec.WorkloadAnnotations)
 
-	placement := &ocmv1beta1.Placement{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "first-placement",
-			Namespace: schedulingManifest.Namespace,
-		},
-		Spec: ocmv1beta1.PlacementSpec{
-			NumberOfClusters: &numClusters,
-			// specify cluster set later on
-			Predicates: []ocmv1beta1.ClusterPredicate{
-				{
-					RequiredClusterSelector: ocmv1beta1.ClusterSelector{
-						LabelSelector: metav1.LabelSelector{
-							MatchLabels: clusterLabels,
+	for _, manifest := range schedulingManifest.Spec.Manifests {
+		object := &unstructured.Unstructured{}
+		if err := object.UnmarshalJSON(manifest.Raw); err != nil {
+			return nil, err
+		}
+
+		index := findWorkload(modifiedWorkloads, object.GetName())
+		if index != -1 {
+			placementRules = parseAnnotations(schedulingManifest.Spec.WorkloadAnnotations[index].Annotations)
+			maps.Copy(placementRules, globalAnnotations)
+		} else {
+			placementRules = globalAnnotations
+		}
+
+		placement := &ocmv1beta1.Placement{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("%s-placement", object.GetName()),
+				Namespace: schedulingManifest.Namespace,
+			},
+			Spec: ocmv1beta1.PlacementSpec{
+				NumberOfClusters: &numClusters,
+				ClusterSets: []string{
+					"global",
+				},
+				Predicates: []ocmv1beta1.ClusterPredicate{
+					{
+						RequiredClusterSelector: ocmv1beta1.ClusterSelector{
+							LabelSelector: metav1.LabelSelector{
+								MatchLabels: placementRules,
+							},
 						},
 					},
 				},
 			},
-		},
+		}
+
+		placements = append(placements, placement)
 	}
 
-	return placement
+	return placements, nil
+}
+
+func findWorkload(workloads []string, targetWorkload string) int {
+	for i, workload := range workloads {
+		if workload == targetWorkload {
+			return i
+		}
+	}
+	return -1
+}
+
+func listModifiedWorkloads(workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) (modifiedWorkloads []string) {
+	for _, workloadAnnotation := range workloadAnnotations {
+		modifiedWorkloads = append(modifiedWorkloads, workloadAnnotation.Name)
+	}
+	return
 }
 
 // Assuming annotation being parsed is of the form p2code.filter.xx=yy
 // Parse so that p2code.filter.xx is the key and yy is the value
-func parseClusterLabels(annotations []string) map[string]string {
+func parseAnnotations(annotations []string) map[string]string {
 	clusterLabels := make(map[string]string)
 	for _, annotation := range annotations {
 		splitAnnotation := strings.Split(annotation, "=")
