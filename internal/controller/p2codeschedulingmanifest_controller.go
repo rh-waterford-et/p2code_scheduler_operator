@@ -19,7 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	"maps"
+	"slices"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -86,10 +86,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 }
 
 func (r *P2CodeSchedulingManifestReconciler) generatePlacementForManifests(schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]*ocmv1beta1.Placement, error) {
-	var placementRules map[string]string
+	var placementRules []metav1.LabelSelectorRequirement
 	var numClusters int32 = 1
 	placements := []*ocmv1beta1.Placement{}
-	globalAnnotations := parseAnnotations(schedulingManifest.Spec.GlobalAnnotations)
+	commonPlacementRules := extractPlacementRules(schedulingManifest.Spec.GlobalAnnotations)
 	modifiedWorkloads := listModifiedWorkloads(schedulingManifest.Spec.WorkloadAnnotations)
 
 	for _, manifest := range schedulingManifest.Spec.Manifests {
@@ -100,10 +100,10 @@ func (r *P2CodeSchedulingManifestReconciler) generatePlacementForManifests(sched
 
 		index := findWorkload(modifiedWorkloads, object.GetName())
 		if index != -1 {
-			placementRules = parseAnnotations(schedulingManifest.Spec.WorkloadAnnotations[index].Annotations)
-			maps.Copy(placementRules, globalAnnotations)
+			additionalPlacementRules := extractPlacementRules(schedulingManifest.Spec.WorkloadAnnotations[index].Annotations)
+			placementRules = slices.Concat(commonPlacementRules, additionalPlacementRules)
 		} else {
-			placementRules = globalAnnotations
+			placementRules = commonPlacementRules
 		}
 
 		placement := &ocmv1beta1.Placement{
@@ -119,8 +119,8 @@ func (r *P2CodeSchedulingManifestReconciler) generatePlacementForManifests(sched
 				Predicates: []ocmv1beta1.ClusterPredicate{
 					{
 						RequiredClusterSelector: ocmv1beta1.ClusterSelector{
-							LabelSelector: metav1.LabelSelector{
-								MatchLabels: placementRules,
+							ClaimSelector: ocmv1beta1.ClusterClaimSelector{
+								MatchExpressions: placementRules,
 							},
 						},
 					},
@@ -152,13 +152,20 @@ func listModifiedWorkloads(workloadAnnotations []schedulingv1alpha1.WorkloadAnno
 
 // Assuming annotation being parsed is of the form p2code.filter.xx=yy
 // Parse so that p2code.filter.xx is the key and yy is the value
-func parseAnnotations(annotations []string) map[string]string {
-	clusterLabels := make(map[string]string)
+func extractPlacementRules(annotations []string) []metav1.LabelSelectorRequirement {
+	placementRules := []metav1.LabelSelectorRequirement{}
 	for _, annotation := range annotations {
 		splitAnnotation := strings.Split(annotation, "=")
-		clusterLabels[splitAnnotation[0]] = splitAnnotation[1]
+		newPlacementRule := metav1.LabelSelectorRequirement{
+			Key:      splitAnnotation[0],
+			Operator: "In",
+			Values: []string{
+				splitAnnotation[1],
+			},
+		}
+		placementRules = append(placementRules, newPlacementRule)
 	}
-	return clusterLabels
+	return placementRules
 }
 
 // SetupWithManager sets up the controller with the Manager.
