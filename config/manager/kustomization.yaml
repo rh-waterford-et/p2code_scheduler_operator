@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: quay.io/clwalsh/p2code-scheduler
-  newTag: "1"
+  newTag: 1.0.0
