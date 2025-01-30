@@ -45,6 +45,7 @@ type P2CodeSchedulingManifestReconciler struct {
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=placementdecisions,verbs=get;list;watch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -80,6 +81,18 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 
 		log.Info("Placement", "placement spec", placement.Spec)
+	}
+
+	placementDecisionList := &ocmv1beta1.PlacementDecisionList{}
+	err = r.List(ctx, placementDecisionList)
+
+	if err != nil {
+		log.Error(err, "Cannot retrieve the list of PlacementDecisions")
+		return ctrl.Result{}, err
+	}
+
+	for _, placementDecision := range placementDecisionList.Items {
+		log.Info("Contents of PlacementDecision", "placementDecision", placementDecision)
 	}
 
 	return ctrl.Result{}, nil
