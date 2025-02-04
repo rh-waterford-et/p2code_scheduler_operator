@@ -21,17 +21,22 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
-	ocmv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
+	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
+	workv1 "open-cluster-management.io/api/work/v1"
 )
 
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
@@ -46,6 +51,7 @@ type P2CodeSchedulingManifestReconciler struct {
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=placementdecisions,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -66,85 +72,140 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Contents of P2CodeSchedulingManifest", "manifest", p2CodeSchedulingManifest)
+	commonPlacementRules := extractPlacementRules(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
+	modifiedWorkloads := listModifiedWorkloads(p2CodeSchedulingManifest.Spec.WorkloadAnnotations)
 
-	placements, err := r.generatePlacementForManifests(p2CodeSchedulingManifest)
-	if err != nil {
-		log.Error(err, "Failed to generate Placements for manifests")
-		return ctrl.Result{}, err
-	}
-
-	for _, placement := range placements {
-		if err = r.Create(ctx, placement); err != nil {
-			log.Error(err, "Failed to create Placement")
+	for _, manifest := range p2CodeSchedulingManifest.Spec.Manifests {
+		object := &unstructured.Unstructured{}
+		if err := object.UnmarshalJSON(manifest.Raw); err != nil {
+			log.Error(err, "Failed to unmarshal manifest")
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Placement", "placement spec", placement.Spec)
-	}
+		placementName := fmt.Sprintf("%s-%s-placement", object.GetName(), strings.ToLower(object.GetKind()))
+		manifestWorkName := fmt.Sprintf("%s-%s-manifest", object.GetName(), strings.ToLower(object.GetKind()))
 
-	placementDecisionList := &ocmv1beta1.PlacementDecisionList{}
-	err = r.List(ctx, placementDecisionList)
+		placement := &clusterv1beta1.Placement{}
+		err = r.Get(ctx, types.NamespacedName{Name: placementName, Namespace: p2CodeSchedulingManifest.Namespace}, placement)
+		if err != nil && apierrors.IsNotFound(err) {
+			var placementRules []metav1.LabelSelectorRequirement
+			index := findWorkload(modifiedWorkloads, object.GetName())
+			if index != -1 {
+				additionalPlacementRules := extractPlacementRules(p2CodeSchedulingManifest.Spec.WorkloadAnnotations[index].Annotations)
+				placementRules = slices.Concat(commonPlacementRules, additionalPlacementRules)
+			} else {
+				placementRules = commonPlacementRules
+			}
 
-	if err != nil {
-		log.Error(err, "Cannot retrieve the list of PlacementDecisions")
-		return ctrl.Result{}, err
-	}
+			placement = r.generatePlacementForManifest(placementName, p2CodeSchedulingManifest.Namespace, placementRules)
+			if err = r.Create(ctx, placement); err != nil {
+				log.Error(err, "Failed to create Placement")
+				return ctrl.Result{}, err
+			}
 
-	for _, placementDecision := range placementDecisionList.Items {
-		log.Info("Contents of PlacementDecision", "placementDecision", placementDecision)
+		} else if err != nil {
+			log.Error(err, "Failed to fetch Placement")
+			return ctrl.Result{}, err
+		}
+
+		// Check the placement status for a placement decision
+		if placement.Status.Conditions != nil {
+			if isPlacementSatisfied(placement.Status.Conditions) {
+				placementDecisionName := placement.Status.DecisionGroups[0].Decisions[0]
+				placementDecision := &clusterv1beta1.PlacementDecision{}
+				err = r.Get(ctx, types.NamespacedName{Name: placementDecisionName, Namespace: p2CodeSchedulingManifest.Namespace}, placementDecision)
+				if err != nil {
+					log.Error(err, "Failed to get PlacementDecision")
+					return ctrl.Result{}, err
+				}
+
+				manifestWorkNamespace := placementDecision.Status.Decisions[0].ClusterName
+
+				manifestWork := &workv1.ManifestWork{}
+				err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: manifestWorkNamespace}, manifestWork)
+				// Create a manifestwork for the manifest if it doesnt exist
+				if err != nil && apierrors.IsNotFound(err) {
+					newManifestWork := &workv1.ManifestWork{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      manifestWorkName,
+							Namespace: manifestWorkNamespace,
+						},
+						Spec: workv1.ManifestWorkSpec{
+							Workload: workv1.ManifestsTemplate{
+								Manifests: []workv1.Manifest{
+									{
+										RawExtension: manifest,
+									},
+								},
+							},
+						},
+					}
+
+					if err = r.Create(ctx, newManifestWork); err != nil {
+						log.Error(err, "Failed to create ManifestWork")
+						return ctrl.Result{}, err
+					}
+
+				} else if err != nil {
+					log.Error(err, "Failed to fetch ManifestWork")
+					return ctrl.Result{}, err
+				}
+
+			} else {
+				log.Error(fmt.Errorf("there are no managed clusters that satisfy the annotations requested"), "Unable to find a suitable location for the workload")
+				// TODO update status with error failed to schedule
+				return ctrl.Result{}, err
+			}
+
+		} else {
+			// If the placement decision is not ready yet run the reconcile loop again in 30 seconds to finish off the controller logic
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+		}
+
 	}
 
 	return ctrl.Result{}, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) generatePlacementForManifests(schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]*ocmv1beta1.Placement, error) {
-	var placementRules []metav1.LabelSelectorRequirement
+func isPlacementSatisfied(conditions []metav1.Condition) bool {
+	satisfied := false
+	for _, condition := range conditions {
+		if condition.Type == "PlacementSatisfied" {
+			if condition.Status == "True" {
+				satisfied = true
+			}
+			break
+		}
+	}
+	return satisfied
+}
+
+func (r *P2CodeSchedulingManifestReconciler) generatePlacementForManifest(name string, namespace string, placementRules []metav1.LabelSelectorRequirement) *clusterv1beta1.Placement {
 	var numClusters int32 = 1
-	placements := []*ocmv1beta1.Placement{}
-	commonPlacementRules := extractPlacementRules(schedulingManifest.Spec.GlobalAnnotations)
-	modifiedWorkloads := listModifiedWorkloads(schedulingManifest.Spec.WorkloadAnnotations)
 
-	for _, manifest := range schedulingManifest.Spec.Manifests {
-		object := &unstructured.Unstructured{}
-		if err := object.UnmarshalJSON(manifest.Raw); err != nil {
-			return nil, err
-		}
-
-		index := findWorkload(modifiedWorkloads, object.GetName())
-		if index != -1 {
-			additionalPlacementRules := extractPlacementRules(schedulingManifest.Spec.WorkloadAnnotations[index].Annotations)
-			placementRules = slices.Concat(commonPlacementRules, additionalPlacementRules)
-		} else {
-			placementRules = commonPlacementRules
-		}
-
-		placement := &ocmv1beta1.Placement{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      fmt.Sprintf("%s-placement", object.GetName()),
-				Namespace: schedulingManifest.Namespace,
+	placement := &clusterv1beta1.Placement{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: clusterv1beta1.PlacementSpec{
+			NumberOfClusters: &numClusters,
+			ClusterSets: []string{
+				"global",
 			},
-			Spec: ocmv1beta1.PlacementSpec{
-				NumberOfClusters: &numClusters,
-				ClusterSets: []string{
-					"global",
-				},
-				Predicates: []ocmv1beta1.ClusterPredicate{
-					{
-						RequiredClusterSelector: ocmv1beta1.ClusterSelector{
-							ClaimSelector: ocmv1beta1.ClusterClaimSelector{
-								MatchExpressions: placementRules,
-							},
+			Predicates: []clusterv1beta1.ClusterPredicate{
+				{
+					RequiredClusterSelector: clusterv1beta1.ClusterSelector{
+						ClaimSelector: clusterv1beta1.ClusterClaimSelector{
+							MatchExpressions: placementRules,
 						},
 					},
 				},
 			},
-		}
-
-		placements = append(placements, placement)
+		},
 	}
 
-	return placements, nil
+	return placement
 }
 
 func findWorkload(workloads []string, targetWorkload string) int {
