@@ -26,18 +26,22 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
-
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
+
+const finalizer = "scheduling.p2code.eu/finalizer"
+const ownershipLabel = "scheduling.p2code.eu/owner"
 
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
 type P2CodeSchedulingManifestReconciler struct {
@@ -64,12 +68,42 @@ type P2CodeSchedulingManifestReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
+
+	// Get P2CodeSchedulingManifest instance
 	p2CodeSchedulingManifest := &schedulingv1alpha1.P2CodeSchedulingManifest{}
 	err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest)
-
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			// Stop reconciliation if the resource is not found or has been deleted
+			return ctrl.Result{}, nil
+		}
 		log.Error(err, "Failed to get P2CodeSchedulingManifest")
 		return ctrl.Result{}, err
+	}
+
+	// Check if P2CodeSchedulingManifest instance is marked for deletion
+	if p2CodeSchedulingManifest.GetDeletionTimestamp() != nil {
+		if controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
+			if err := r.performFinalizerOperations(ctx, p2CodeSchedulingManifest); err != nil {
+				return ctrl.Result{}, err
+			}
+
+			controllerutil.RemoveFinalizer(p2CodeSchedulingManifest, finalizer)
+			err = r.Update(ctx, p2CodeSchedulingManifest)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Ensure P2CodeSchedulingManifest instance has a finalizer
+	if !controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
+		controllerutil.AddFinalizer(p2CodeSchedulingManifest, finalizer)
+		if err := r.Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to add finalizer to P2CodeSchedulingManifest instance")
+			return ctrl.Result{}, err
+		}
 	}
 
 	commonPlacementRules := extractPlacementRules(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
@@ -98,6 +132,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			}
 
 			placement = r.generatePlacementForManifest(placementName, p2CodeSchedulingManifest.Namespace, placementRules)
+
+			if err = ctrl.SetControllerReference(p2CodeSchedulingManifest, placement, r.Scheme); err != nil {
+				log.Error(err, "Failed to set controller reference for placement")
+				return ctrl.Result{}, err
+			}
+
 			if err = r.Create(ctx, placement); err != nil {
 				log.Error(err, "Failed to create Placement")
 				return ctrl.Result{}, err
@@ -129,6 +169,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 						ObjectMeta: metav1.ObjectMeta{
 							Name:      manifestWorkName,
 							Namespace: manifestWorkNamespace,
+							Labels: map[string]string{
+								ownershipLabel: p2CodeSchedulingManifest.Name,
+							},
 						},
 						Spec: workv1.ManifestWorkSpec{
 							Workload: workv1.ManifestsTemplate{
@@ -165,6 +208,33 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
+// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
+func (r *P2CodeSchedulingManifestReconciler) performFinalizerOperations(ctx context.Context, schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
+	manifestWorkList := &workv1.ManifestWorkList{}
+	labelSelector, err := labels.Parse(fmt.Sprintf("%s=%s", ownershipLabel, schedulingManifest.Name))
+
+	if err != nil {
+		return err
+	}
+
+	listOptions := client.ListOptions{
+		LabelSelector: labelSelector,
+	}
+
+	if err := r.List(ctx, manifestWorkList, &listOptions); err != nil {
+		return err
+	}
+
+	for _, manifest := range manifestWorkList.Items {
+		if err := r.Delete(ctx, &manifest); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func isPlacementSatisfied(conditions []metav1.Condition) bool {
@@ -246,5 +316,7 @@ func extractPlacementRules(annotations []string) []metav1.LabelSelectorRequireme
 func (r *P2CodeSchedulingManifestReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&schedulingv1alpha1.P2CodeSchedulingManifest{}).
+		Owns(&clusterv1beta1.Placement{}).
+		Owns(&workv1.ManifestWork{}).
 		Complete(r)
 }
