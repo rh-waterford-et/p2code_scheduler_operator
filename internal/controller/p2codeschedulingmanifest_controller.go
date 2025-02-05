@@ -84,10 +84,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Check if P2CodeSchedulingManifest instance is marked for deletion
 	if p2CodeSchedulingManifest.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
+			log.Info("Performing finalizing operations before deleting P2CodeSchedulingManifest")
 			if err := r.performFinalizerOperations(ctx, p2CodeSchedulingManifest); err != nil {
 				return ctrl.Result{}, err
 			}
 
+			log.Info("Removing finalizer to allow instance to be deleted")
 			controllerutil.RemoveFinalizer(p2CodeSchedulingManifest, finalizer)
 			err = r.Update(ctx, p2CodeSchedulingManifest)
 			if err != nil {
@@ -99,6 +101,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	// Ensure P2CodeSchedulingManifest instance has a finalizer
 	if !controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
+		log.Info("Adding finalizer to P2CodeSchedulingManifest")
 		controllerutil.AddFinalizer(p2CodeSchedulingManifest, finalizer)
 		if err := r.Update(ctx, p2CodeSchedulingManifest); err != nil {
 			log.Error(err, "Failed to add finalizer to P2CodeSchedulingManifest instance")
@@ -138,6 +141,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				return ctrl.Result{}, err
 			}
 
+			log.Info("Creating placement", "Placement name", placementName)
 			if err = r.Create(ctx, placement); err != nil {
 				log.Error(err, "Failed to create Placement")
 				return ctrl.Result{}, err
@@ -160,6 +164,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				}
 
 				manifestWorkNamespace := placementDecision.Status.Decisions[0].ClusterName
+				log.Info("Placement decision ready", "Cluster selected", manifestWorkNamespace)
 
 				manifestWork := &workv1.ManifestWork{}
 				err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: manifestWorkNamespace}, manifestWork)
@@ -184,6 +189,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 						},
 					}
 
+					log.Info("Creating ManifestWork", "ManifestWork name", manifestWorkName, "ManifestWork namespace", manifestWorkNamespace)
 					if err = r.Create(ctx, newManifestWork); err != nil {
 						log.Error(err, "Failed to create ManifestWork")
 						return ctrl.Result{}, err
