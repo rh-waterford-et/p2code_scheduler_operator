@@ -164,8 +164,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				}
 
 				manifestWorkNamespace := placementDecision.Status.Decisions[0].ClusterName
-				log.Info("Placement decision ready", "Cluster selected", manifestWorkNamespace)
-
 				manifestWork := &workv1.ManifestWork{}
 				err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: manifestWorkNamespace}, manifestWork)
 				// Create a manifestwork for the manifest if it doesnt exist
@@ -189,7 +187,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 						},
 					}
 
-					log.Info("Creating ManifestWork", "ManifestWork name", manifestWorkName, "ManifestWork namespace", manifestWorkNamespace)
+					log.Info("Placement decision ready creating ManifestWork", "ManifestWork name", manifestWorkName, "Cluster selected/ManifestWork namespace", manifestWorkNamespace)
 					if err = r.Create(ctx, newManifestWork); err != nil {
 						log.Error(err, "Failed to create ManifestWork")
 						return ctrl.Result{}, err
@@ -207,8 +205,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			}
 
 		} else {
-			// If the placement decision is not ready yet run the reconcile loop again in 30 seconds to finish off the controller logic
-			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			// If the placement decision is not ready yet run the reconcile loop again in 10 seconds to finish off the controller logic
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 
 	}
