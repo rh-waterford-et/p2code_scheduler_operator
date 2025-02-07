@@ -86,6 +86,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		if controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
 			log.Info("Performing finalizing operations before deleting P2CodeSchedulingManifest")
 			if err := r.performFinalizerOperations(ctx, p2CodeSchedulingManifest); err != nil {
+				log.Error(err, "Failed to perform clean up operations on instance before deleting")
 				return ctrl.Result{}, err
 			}
 
@@ -93,6 +94,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			controllerutil.RemoveFinalizer(p2CodeSchedulingManifest, finalizer)
 			err = r.Update(ctx, p2CodeSchedulingManifest)
 			if err != nil {
+				log.Error(err, "Failed to update instance and remove finalizer")
 				return ctrl.Result{}, err
 			}
 		}
