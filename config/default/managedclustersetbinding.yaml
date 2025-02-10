@@ -1,0 +1,11 @@
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: global
+  namespace: system
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: p2code-scheduler
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  clusterSet: global

@@ -42,6 +42,7 @@ import (
 
 const finalizer = "scheduling.p2code.eu/finalizer"
 const ownershipLabel = "scheduling.p2code.eu/owner"
+const P2CodeSchedulerNamespace = "p2code-scheduler-system"
 
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
 type P2CodeSchedulingManifestReconciler struct {
@@ -68,6 +69,14 @@ type P2CodeSchedulingManifestReconciler struct {
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.19.0/pkg/reconcile
 func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
+
+	// Validate that the P2CodeSchedulingManifest instance is in the correct namespace
+	if req.Namespace != P2CodeSchedulerNamespace {
+		// TODO update status with error failed to schedule
+		err := fmt.Errorf("incorrect namespace")
+		log.Error(err, "ignoring resource as it is not in the p2code-scheduler-system namespace")
+		return ctrl.Result{}, err
+	}
 
 	// Get P2CodeSchedulingManifest instance
 	p2CodeSchedulingManifest := &schedulingv1alpha1.P2CodeSchedulingManifest{}
