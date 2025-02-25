@@ -5,6 +5,7 @@ metadata:
     app.kubernetes.io/name: p2code-scheduler
     app.kubernetes.io/managed-by: kustomize
   name: p2codeschedulingmanifest-sample
+  namespace: p2code-scheduler-system
 spec:
   globalAnnotations: 
     - p2code.filter.region=EU
