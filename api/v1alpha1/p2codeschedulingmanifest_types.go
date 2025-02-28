@@ -38,14 +38,24 @@ type P2CodeSchedulingManifestSpec struct {
 	Manifests []runtime.RawExtension `json:"manifests"`
 }
 
+type SchedulingDecision struct {
+	// Name of manifest to be placed
+	ManifestName string `json:"manifestName"`
+	// Name of managed cluster where the manifest has been scheduled
+	ClusterSelected string `json:"clusterSelected"`
+}
+
 // P2CodeSchedulingManifestStatus defines the observed state of P2CodeSchedulingManifest
 type P2CodeSchedulingManifestStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// List of conditions for P2CodeSchedulingManifest
+	Conditions []metav1.Condition `json:"conditions"`
+	// List of scheduling decision made for each manifest taking into account the annotations specified
+	Decisions []SchedulingDecision `json:"decisions"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.conditions[0].type"
 
 // P2CodeSchedulingManifest is the Schema for the p2codeschedulingmanifests API
 type P2CodeSchedulingManifest struct {
@@ -58,7 +68,7 @@ type P2CodeSchedulingManifest struct {
 
 // +kubebuilder:object:root=true
 
-// P2CodeSchedulingManifestList contains a list of P2CodeSchedulingManifest
+// P2CodeSchedulingManifestList contains a list of P2CodeSchedulingManifests
 type P2CodeSchedulingManifestList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`

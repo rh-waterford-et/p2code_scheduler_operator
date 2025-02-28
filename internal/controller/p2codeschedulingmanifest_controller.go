@@ -23,7 +23,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iancoleman/strcase"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -43,6 +46,13 @@ import (
 const finalizer = "scheduling.p2code.eu/finalizer"
 const ownershipLabel = "scheduling.p2code.eu/owner"
 const P2CodeSchedulerNamespace = "p2code-scheduler-system"
+
+// Status conditions corresponding to the state of the P2CodeSchedulingManifest
+const (
+	typeSchedulingSucceeded = "SchedulingSucceeded"
+	typeSchedulingFailed    = "SchedulingFailed"
+	typeFinalizing          = "Finalizing"
+)
 
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
 type P2CodeSchedulingManifestReconciler struct {
@@ -70,14 +80,6 @@ type P2CodeSchedulingManifestReconciler struct {
 func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// Validate that the P2CodeSchedulingManifest instance is in the correct namespace
-	if req.Namespace != P2CodeSchedulerNamespace {
-		// TODO update status with error failed to schedule
-		err := fmt.Errorf("incorrect namespace")
-		log.Error(err, "ignoring resource as it is not in the p2code-scheduler-system namespace")
-		return ctrl.Result{}, err
-	}
-
 	// Get P2CodeSchedulingManifest instance
 	p2CodeSchedulingManifest := &schedulingv1alpha1.P2CodeSchedulingManifest{}
 	err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest)
@@ -90,16 +92,60 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 
+	// Validate that the P2CodeSchedulingManifest instance is in the correct namespace
+	if req.Namespace != P2CodeSchedulerNamespace {
+		errorTitle := "incorrect namespace"
+		errorMessage := "ignoring resource as it is not in the p2code-scheduler-system namespace"
+
+		err := fmt.Errorf("%s", errorTitle)
+		log.Error(err, errorMessage)
+
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeSchedulingFailed, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, err
+	}
+
 	// Check if P2CodeSchedulingManifest instance is marked for deletion
 	if p2CodeSchedulingManifest.GetDeletionTimestamp() != nil {
 		if controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
-			log.Info("Performing finalizing operations before deleting P2CodeSchedulingManifest")
-			if err := r.performFinalizerOperations(ctx, p2CodeSchedulingManifest); err != nil {
+			message := "Performing finalizing operations before deleting P2CodeSchedulingManifest"
+			log.Info(message)
+
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeFinalizing, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: message})
+			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+				return ctrl.Result{}, err
+			}
+
+			// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
+			// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
+			if err := r.deleteOwnedManifestWorkList(ctx, p2CodeSchedulingManifest); err != nil {
 				log.Error(err, "Failed to perform clean up operations on instance before deleting")
 				return ctrl.Result{}, err
 			}
 
-			log.Info("Removing finalizer to allow instance to be deleted")
+			// Fetch updated P2CodeSchedulingManifest instance
+			if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+				log.Error(err, "Failed to re-fetch P2CodeSchedulingManifest")
+				return ctrl.Result{}, err
+			}
+
+			message = "Removing finalizer to allow instance to be deleted"
+			log.Info(message)
+
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeFinalizing, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: message})
+			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+				return ctrl.Result{}, err
+			}
+
 			controllerutil.RemoveFinalizer(p2CodeSchedulingManifest, finalizer)
 			err = r.Update(ctx, p2CodeSchedulingManifest)
 			if err != nil {
@@ -135,6 +181,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 		placement := &clusterv1beta1.Placement{}
 		err = r.Get(ctx, types.NamespacedName{Name: placementName, Namespace: p2CodeSchedulingManifest.Namespace}, placement)
+
+		// Create placement for manifest if it doesnt exist
 		if err != nil && apierrors.IsNotFound(err) {
 			var placementRules []metav1.LabelSelectorRequirement
 			index := findWorkload(modifiedWorkloads, object.GetName())
@@ -210,8 +258,26 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				}
 
 			} else {
-				log.Error(fmt.Errorf("there are no managed clusters that satisfy the annotations requested"), "Unable to find a suitable location for the workload")
-				// TODO update status with error failed to schedule
+				errorTitle := "placement failed"
+				errorMessage := "Unable to find a suitable location for the workload as there are no managed clusters that satisfy the annotations requested"
+
+				err := fmt.Errorf("%s", errorTitle)
+				log.Error(err, errorMessage)
+
+				meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeSchedulingFailed, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
+				p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+				if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+					log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+					return ctrl.Result{}, err
+				}
+
+				// All manifests specified within the P2CodeSchedulingManifest must be successfully placed
+				// If one manifest fails to be placed, no other manifest should run as the overall scheduling strategy failed
+				// Delete all manifestworks associated with this P2CodeSchedulingManifest instance to unschedule any manifest that might previously have been scheduled
+				if err := r.deleteOwnedManifestWorkList(ctx, p2CodeSchedulingManifest); err != nil {
+					log.Error(err, "Failed to delete ManifestWorks associated with this P2CodeSchedulingManifest instance")
+					return ctrl.Result{}, err
+				}
 				return ctrl.Result{}, err
 			}
 
@@ -225,9 +291,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	return ctrl.Result{}, nil
 }
 
-// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
-// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
-func (r *P2CodeSchedulingManifestReconciler) performFinalizerOperations(ctx context.Context, schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
+func (r *P2CodeSchedulingManifestReconciler) deleteOwnedManifestWorkList(ctx context.Context, schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
 	manifestWorkList := &workv1.ManifestWorkList{}
 	labelSelector, err := labels.Parse(fmt.Sprintf("%s=%s", ownershipLabel, schedulingManifest.Name))
 
