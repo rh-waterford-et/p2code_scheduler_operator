@@ -146,7 +146,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				return ctrl.Result{}, err
 			}
 
-			controllerutil.RemoveFinalizer(p2CodeSchedulingManifest, finalizer)
+			if ok := controllerutil.RemoveFinalizer(p2CodeSchedulingManifest, finalizer); !ok {
+				log.Error(err, "Failed to remove finalizer for P2CodeSchedulingManifest")
+				return ctrl.Result{Requeue: true}, nil
+			}
+
 			err = r.Update(ctx, p2CodeSchedulingManifest)
 			if err != nil {
 				log.Error(err, "Failed to update instance and remove finalizer")
@@ -159,9 +163,14 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Ensure P2CodeSchedulingManifest instance has a finalizer
 	if !controllerutil.ContainsFinalizer(p2CodeSchedulingManifest, finalizer) {
 		log.Info("Adding finalizer to P2CodeSchedulingManifest")
-		controllerutil.AddFinalizer(p2CodeSchedulingManifest, finalizer)
-		if err := r.Update(ctx, p2CodeSchedulingManifest); err != nil {
+
+		if ok := controllerutil.AddFinalizer(p2CodeSchedulingManifest, finalizer); !ok {
 			log.Error(err, "Failed to add finalizer to P2CodeSchedulingManifest instance")
+			return ctrl.Result{Requeue: true}, nil
+		}
+
+		if err := r.Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest instance with finalizer")
 			return ctrl.Result{}, err
 		}
 	}
