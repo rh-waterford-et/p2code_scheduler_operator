@@ -59,6 +59,26 @@ type P2CodeSchedulingManifestReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// Var for manifest works or bundles
+}
+
+// Might to consider namespace too
+type Resource struct {
+	placed   bool
+	kind     string
+	name     string
+	manifest runtime.RawExtension
+}
+
+type ResourceCollection struct {
+	workloads          []Resource
+	ancillaryResources []Resource
+}
+
+type Bundle struct {
+	mainWorkload                Resource
+	ancillaryResourcesManifests runtime.RawExtension
+	placementDecision           string
 }
 
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests,verbs=get;list;watch;create;update;patch;delete
@@ -174,6 +194,36 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, err
 		}
 	}
+
+	// Analyse manifests to be scheduled
+	resourceCollection, err := categoriseManifests(p2CodeSchedulingManifest.Spec.Manifests)
+	if err != nil {
+		log.Error(err, "Failed to process manifests to be scheduled")
+		return ctrl.Result{}, err
+	}
+
+	// If no global nor workload annotations are specified examine the workload resource requests to make placement rules
+	// TODO calculateWorkloadResourceRequests(resourceCollection.workloads)
+
+	// Check workload annoatations
+	for _, workload := range resourceCollection.workloads {
+		bundle := Bundle{mainWorkload: workload} // Q is there case when dont make a bundle ??
+		// calculateWorkloadResourceRequests(workload, workloadType)
+
+		bundle.ancillaryResourcesManifests = groupAncillaryResources(workload)
+	}
+
+	// if global set and workload empty {
+	// createPlacement - 1 placement
+	//}
+
+	// if global empty and workload empty - everything goes to random cluster
+
+	// if global set and workload set {
+	// createPlacements - similar to what have now
+	// }
+
+	// if global empty and workload set - bundle workloads to specified cluster and bundle remaining to random cluster
 
 	commonPlacementRules := extractPlacementRules(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
 	modifiedWorkloads := listModifiedWorkloads(p2CodeSchedulingManifest.Spec.WorkloadAnnotations)
@@ -299,6 +349,43 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	return ctrl.Result{}, nil
 }
+
+func categoriseManifests(manifests []runtime.RawExtension) (ResourceCollection, error) {
+	resourceCollection := ResourceCollection{}
+	for _, manifest := range manifests {
+		object := &unstructured.Unstructured{}
+		if err := object.UnmarshalJSON(manifest.Raw); err != nil {
+			return resourceCollection, err
+		}
+
+		resource := Resource{kind: object.GetKind(), name: object.GetName(), manifest: manifest}
+		switch group := object.GetObjectKind().GroupVersionKind().Group; group {
+		// Workload resources are in the core API group
+		case "":
+			resourceCollection.workloads = append(resourceCollection.workloads, resource)
+			// Ancillary services are in the apps API group
+		case "apps":
+			resourceCollection.ancillaryResources = append(resourceCollection.ancillaryResources, resource)
+		}
+	}
+
+	return resourceCollection, nil
+}
+
+// when iterate over ancillary services check if type service and expand - otherwise check the name against ref in workload
+// when iterate over workloads call a factory type fn that returns the right struct to unmarshal to for the kind it is
+func groupAncillaryResources(workload Resource) []Resource {
+	// need spec of workload
+
+	// deployment, daemonset, job read template
+	// statefulset read template, serviceName, volumeClaimTemplate
+	// cronjob read jobTemplate.spec
+
+	// have func analysePodTemplateSpec
+}
+
+// func that gets the total resource requests from all workloads in bundle
+// needs to be generic to use for multiple workloads too when have global bunch
 
 func (r *P2CodeSchedulingManifestReconciler) deleteOwnedManifestWorkList(ctx context.Context, schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
 	manifestWorkList := &workv1.ManifestWorkList{}
