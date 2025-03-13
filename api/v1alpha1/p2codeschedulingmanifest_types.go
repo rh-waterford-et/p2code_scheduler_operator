@@ -39,9 +39,9 @@ type P2CodeSchedulingManifestSpec struct {
 }
 
 type SchedulingDecision struct {
-	// Name of manifest to be placed
-	ManifestName string `json:"manifestName"`
-	// Name of managed cluster where the manifest has been scheduled
+	// Name of workload scheduled
+	WorkloadName string `json:"workloadName"`
+	// Name of managed cluster where the workload and its ancillary resource have been scheduled
 	ClusterSelected string `json:"clusterSelected"`
 }
 
@@ -55,7 +55,7 @@ type P2CodeSchedulingManifestStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.conditions[0].type"
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.conditions[-1].type"
 
 // P2CodeSchedulingManifest is the Schema for the p2codeschedulingmanifests API
 type P2CodeSchedulingManifest struct {

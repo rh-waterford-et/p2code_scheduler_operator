@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[0].type
+    - jsonPath: .status.conditions[-1].type
       name: State
       type: string
     name: v1alpha1
@@ -138,15 +138,15 @@ spec:
                 items:
                   properties:
                     clusterSelected:
-                      description: Name of managed cluster where the manifest has
-                        been scheduled
+                      description: Name of managed cluster where the workload and
+                        its ancillary resource have been scheduled
                       type: string
-                    manifestName:
-                      description: Name of manifest to be placed
+                    workloadName:
+                      description: Name of workload scheduled
                       type: string
                   required:
                   - clusterSelected
-                  - manifestName
+                  - workloadName
                   type: object
                 type: array
             required:
