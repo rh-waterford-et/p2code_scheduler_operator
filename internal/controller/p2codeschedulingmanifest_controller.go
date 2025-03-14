@@ -260,10 +260,31 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				return ctrl.Result{}, err
 			}
 
-			bundle := r.bundleWorkload(workload)
+			// Check if a bundle already exists for the workload
+			// Create a bundle for the workload if needed and find its ancillary resources
+			bundle, err := r.getBundle(workload)
+			if err != nil {
+				bundle = &Bundle{mainWorkload: workload}
+				r.Bundles = append(r.Bundles, bundle)
+				// TODO calculateWorkloadResourceRequests(workload)
 
-			// calculateWorkloadResourceRequests(workload)
-			bundle.addAncillaryManifests(resourceCollection.ancillaryResources)
+				message := fmt.Sprintf("Analysing workload %s for its ancillary resources", bundle.mainWorkload.name)
+				log.Info(message)
+				err = bundle.addAncillaryManifests(resourceCollection.ancillaryResources)
+				if err != nil {
+					errorMessage := fmt.Sprintf("Configuration errors found while analysing workload %s for its ancillary resources", bundle.mainWorkload.name)
+					log.Error(err, errorMessage)
+
+					meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredWorkload", Message: errorMessage + "," + err.Error()})
+					p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+					if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+						log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+						return ctrl.Result{}, err
+					}
+
+					return ctrl.Result{}, err
+				}
+			}
 
 			// Create placement for bundle if it doesnt exist
 			placementName := fmt.Sprintf("%s-bundle-placement", workload.name)
@@ -404,7 +425,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
 func (b *Bundle) addAncillaryManifests(ancillaryResources []Resource) error {
 
-	// TODO test and check what happens if no namespace given
+	if b.mainWorkload.namespace == "" {
+		return fmt.Errorf("no namespace defined for the workload %s", b.mainWorkload.name)
+	}
+
 	if b.mainWorkload.namespace != "default" {
 		namespaceResource, err := getResourceByKind(ancillaryResources, b.mainWorkload.namespace, "Namespace")
 		if err != nil {
@@ -628,16 +652,13 @@ func isPlacementSatisfied(conditions []metav1.Condition) bool {
 	return satisfied
 }
 
-// Check if bundle exists for workload and if not create a bundle
-func (r *P2CodeSchedulingManifestReconciler) bundleWorkload(workload *Resource) *Bundle {
+func (r *P2CodeSchedulingManifestReconciler) getBundle(workload *Resource) (*Bundle, error) {
 	for _, bundle := range r.Bundles {
 		if bundle.mainWorkload.name == workload.name {
-			return bundle
+			return bundle, nil
 		}
 	}
-	bundle := &Bundle{mainWorkload: workload}
-	r.Bundles = append(r.Bundles, bundle)
-	return bundle
+	return nil, fmt.Errorf("cannot find a bundle for the workload %s", workload.name)
 }
 
 func (r *P2CodeSchedulingManifestReconciler) generatePlacementForBundle(name string, namespace string, placementRules []metav1.LabelSelectorRequirement) *clusterv1beta1.Placement {
@@ -668,7 +689,7 @@ func (r *P2CodeSchedulingManifestReconciler) generatePlacementForBundle(name str
 	return placement
 }
 
-func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownershipLabel string, bundeledManifests []runtime.RawExtension) workv1.ManifestWork {
+func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledManifests []runtime.RawExtension) workv1.ManifestWork {
 	manifestList := []workv1.Manifest{}
 
 	for _, manifest := range bundeledManifests {
@@ -683,7 +704,7 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				ownershipLabel: ownershipLabel,
+				ownershipLabel: ownerLabel,
 			},
 		},
 		Spec: workv1.ManifestWorkSpec{
