@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -423,23 +424,28 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
 func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) ([]runtime.RawExtension, error) {
-	manifests := []runtime.RawExtension{}
+	// Manifests is a map of raw manifests for ancillary resources that should be bundled with the workload
+	// The name of the raw manifest is the key for this map
+	manifests := map[string]runtime.RawExtension{}
+
 	if workload.namespace == "" {
-		return manifests, fmt.Errorf("no namespace defined for the workload %s", workload.name)
+		return []runtime.RawExtension{}, fmt.Errorf("no namespace defined for the workload %s", workload.name)
 	}
 
 	if workload.namespace != "default" {
-		namespaceResource, err := getResourceByKind(ancillaryResources, workload.namespace, "Namespace")
-		if err != nil {
-			return manifests, err
-		}
+		if _, ok := manifests[workload.namespace]; !ok {
+			namespaceResource, err := getResourceByKind(ancillaryResources, workload.namespace, "Namespace")
+			if err != nil {
+				return []runtime.RawExtension{}, err
+			}
 
-		manifests = append(manifests, namespaceResource.manifest)
+			manifests[workload.namespace] = namespaceResource.manifest
+		}
 	}
 
 	podSpec, err := extractPodSpec(workload)
 	if err != nil {
-		return manifests, err
+		return []runtime.RawExtension{}, err
 	}
 
 	// TODO suport later imagePullSecrets
@@ -450,12 +456,14 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 	if len(podSpec.Volumes) > 0 {
 		for _, volume := range podSpec.Volumes {
 			if volume.PersistentVolumeClaim != nil {
-				pvcResource, err := getResourceByKind(ancillaryResources, volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
-				if err != nil {
-					return manifests, err
-				}
+				if _, ok := manifests[volume.PersistentVolumeClaim.ClaimName]; !ok {
+					pvcResource, err := getResourceByKind(ancillaryResources, volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+					if err != nil {
+						return []runtime.RawExtension{}, err
+					}
 
-				manifests = append(manifests, pvcResource.manifest)
+					manifests[volume.PersistentVolumeClaim.ClaimName] = pvcResource.manifest
+				}
 
 				// Later check for storage class
 				// pvc := &corev1.PersistentVolumeClaim{}
@@ -465,32 +473,38 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 			}
 
 			if volume.ConfigMap != nil {
-				cmResource, err := getResourceByKind(ancillaryResources, volume.ConfigMap.Name, "ConfigMap")
-				if err != nil {
-					return manifests, err
-				}
+				if _, ok := manifests[volume.ConfigMap.Name]; !ok {
+					cmResource, err := getResourceByKind(ancillaryResources, volume.ConfigMap.Name, "ConfigMap")
+					if err != nil {
+						return []runtime.RawExtension{}, err
+					}
 
-				manifests = append(manifests, cmResource.manifest)
+					manifests[volume.ConfigMap.Name] = cmResource.manifest
+				}
 			}
 
 			if volume.Secret != nil {
-				secretResource, err := getResourceByKind(ancillaryResources, volume.Secret.SecretName, "Secret")
-				if err != nil {
-					return manifests, err
-				}
+				if _, ok := manifests[volume.Secret.SecretName]; !ok {
+					secretResource, err := getResourceByKind(ancillaryResources, volume.Secret.SecretName, "Secret")
+					if err != nil {
+						return []runtime.RawExtension{}, err
+					}
 
-				manifests = append(manifests, secretResource.manifest)
+					manifests[volume.Secret.SecretName] = secretResource.manifest
+				}
 			}
 		}
 	}
 
 	if podSpec.ServiceAccountName != "" {
-		saResource, err := getResourceByKind(ancillaryResources, podSpec.ServiceAccountName, "ServiceAccount")
-		if err != nil {
-			return manifests, err
-		}
+		if _, ok := manifests[podSpec.ServiceAccountName]; !ok {
+			saResource, err := getResourceByKind(ancillaryResources, podSpec.ServiceAccountName, "ServiceAccount")
+			if err != nil {
+				return []runtime.RawExtension{}, err
+			}
 
-		manifests = append(manifests, saResource.manifest)
+			manifests[podSpec.ServiceAccountName] = saResource.manifest
+		}
 	}
 
 	// Examine Containers and InitContainers for ancillary resources
@@ -502,21 +516,25 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 		if len(container.EnvFrom) > 0 {
 			for _, envSource := range container.EnvFrom {
 				if envSource.ConfigMapRef != nil {
-					cmResource, err := getResourceByKind(ancillaryResources, envSource.ConfigMapRef.Name, "ConfigMap")
-					if err != nil {
-						return manifests, err
-					}
+					if _, ok := manifests[envSource.ConfigMapRef.Name]; !ok {
+						cmResource, err := getResourceByKind(ancillaryResources, envSource.ConfigMapRef.Name, "ConfigMap")
+						if err != nil {
+							return []runtime.RawExtension{}, err
+						}
 
-					manifests = append(manifests, cmResource.manifest)
+						manifests[envSource.ConfigMapRef.Name] = cmResource.manifest
+					}
 				}
 
 				if envSource.SecretRef != nil {
-					secretResource, err := getResourceByKind(ancillaryResources, envSource.SecretRef.Name, "Secret")
-					if err != nil {
-						return manifests, err
-					}
+					if _, ok := manifests[envSource.SecretRef.Name]; !ok {
+						secretResource, err := getResourceByKind(ancillaryResources, envSource.SecretRef.Name, "Secret")
+						if err != nil {
+							return []runtime.RawExtension{}, err
+						}
 
-					manifests = append(manifests, secretResource.manifest)
+						manifests[envSource.SecretRef.Name] = secretResource.manifest
+					}
 				}
 			}
 		}
@@ -525,21 +543,25 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 			for _, envVar := range container.Env {
 				if envVar.ValueFrom != nil {
 					if envVar.ValueFrom.ConfigMapKeyRef != nil {
-						cmResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
-						if err != nil {
-							return manifests, err
-						}
+						if _, ok := manifests[envVar.ValueFrom.ConfigMapKeyRef.Name]; !ok {
+							cmResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
+							if err != nil {
+								return []runtime.RawExtension{}, err
+							}
 
-						manifests = append(manifests, cmResource.manifest)
+							manifests[envVar.ValueFrom.ConfigMapKeyRef.Name] = cmResource.manifest
+						}
 					}
 
 					if envVar.ValueFrom.SecretKeyRef != nil {
-						secretResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.SecretKeyRef.Name, "Secret")
-						if err != nil {
-							return manifests, err
-						}
+						if _, ok := manifests[envVar.ValueFrom.SecretKeyRef.Name]; !ok {
+							secretResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.SecretKeyRef.Name, "Secret")
+							if err != nil {
+								return []runtime.RawExtension{}, err
+							}
 
-						manifests = append(manifests, secretResource.manifest)
+							manifests[envVar.ValueFrom.SecretKeyRef.Name] = secretResource.manifest
+						}
 					}
 				}
 			}
@@ -555,22 +577,24 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return manifests, err
+			return []runtime.RawExtension{}, err
 		}
 
-		svcResource, err := getResourceByKind(ancillaryResources, statefulset.Spec.ServiceName, "Service")
-		if err != nil {
-			return manifests, err
-		}
+		if _, ok := manifests[statefulset.Spec.ServiceName]; !ok {
+			svcResource, err := getResourceByKind(ancillaryResources, statefulset.Spec.ServiceName, "Service")
+			if err != nil {
+				return []runtime.RawExtension{}, err
+			}
 
-		manifests = append(manifests, svcResource.manifest)
+			manifests[statefulset.Spec.ServiceName] = svcResource.manifest
+		}
 	} else {
 		// Get a list of all services and check if the service selector matches the labels on the workload
 		services := listResourceByKind(ancillaryResources, "Service")
 		for _, service := range services {
 			svc := &corev1.Service{}
 			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return manifests, err
+				return []runtime.RawExtension{}, err
 			}
 
 			if len(svc.Spec.Selector) > 0 {
@@ -578,14 +602,16 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 					value, ok := workload.labels[k]
 
 					if ok && value == v {
-						manifests = append(manifests, service.manifest)
+						if _, ok := manifests[svc.Name]; !ok {
+							manifests[svc.Name] = service.manifest
+						}
 					}
 				}
 			}
 		}
 	}
 
-	return manifests, nil
+	return slices.Collect(maps.Values(manifests)), nil
 }
 
 func categoriseManifests(manifests []runtime.RawExtension) (ResourceCollection, error) {
