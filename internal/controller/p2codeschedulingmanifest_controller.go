@@ -90,6 +90,12 @@ type Bundle struct {
 	placementName string
 }
 
+type PlacementOptions struct {
+	name                string
+	controllerReference metav1.Object
+	clusterPredicates   []metav1.LabelSelectorRequirement
+}
+
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/finalizers,verbs=update
@@ -222,10 +228,25 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	// if global empty and workload set - bundle workloads to specified cluster and bundle remaining to random cluster
 
-	// if global empty and workload empty - everything goes to random cluster
-	// If no global nor workload annotations are specified examine the workload resource requests to make placement rules
-	// TODO calculateWorkloadResourceRequests(resourceCollection.workloads)
-	// func needs to be generic for global bundle and workload bundle case
+	// If no annotations at all are specified all manifests are scheduled to a random cluster
+	// Create an empty placement and allow the Placement API to decide on a random cluster
+	// Later take into account the resource requests of each workload
+	if len(p2CodeSchedulingManifest.Spec.GlobalAnnotations) == 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
+		// Check if a default bundle already exists
+		_, err := r.getBundle("default", p2CodeSchedulingManifest.Name)
+		if err != nil {
+			log.Info("Creating default placement for all manifests")
+			bundle := &Bundle{name: "default", manifests: p2CodeSchedulingManifest.Spec.Manifests}
+			r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
+			placementName := "default-placement"
+			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest}); err != nil {
+				log.Error(err, "Failed to create placement")
+				return ctrl.Result{}, err
+			}
+
+			bundle.placementName = placementName
+		}
+	}
 
 	// Q is there case when dont make a bundle ??
 	// when reconcile check if a bundle already exists and update it
@@ -241,7 +262,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			bundle := &Bundle{name: "global", manifests: p2CodeSchedulingManifest.Spec.Manifests}
 			r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
 			placementName := "global-placement"
-			if err := r.createPlacement(ctx, placementName, commonPlacementRules, p2CodeSchedulingManifest); err != nil {
+			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest, clusterPredicates: commonPlacementRules}); err != nil {
 				log.Error(err, "Failed to create placement")
 				return ctrl.Result{}, err
 			}
@@ -310,7 +331,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			additionalPlacementRules := extractPlacementRules(workloadAnnotation.Annotations)
 			placementRules := slices.Concat(commonPlacementRules, additionalPlacementRules)
 
-			if err := r.createPlacement(ctx, placementName, placementRules, p2CodeSchedulingManifest); err != nil {
+			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest, clusterPredicates: placementRules}); err != nil {
 				log.Error(err, "Failed to create placement")
 				return ctrl.Result{}, err
 			}
@@ -329,7 +350,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		placement := &clusterv1beta1.Placement{}
 		err = r.Get(ctx, types.NamespacedName{Name: bundle.placementName, Namespace: P2CodeSchedulerNamespace}, placement)
 		if err != nil {
-			log.Error(err, "Failed to fetch Placement 2")
+			log.Error(err, "Failed to fetch Placement")
 			return ctrl.Result{}, err
 		}
 
@@ -691,36 +712,41 @@ func (r *P2CodeSchedulingManifestReconciler) getBundle(bundleName string, ownerR
 }
 
 // Create placement if it doesnt exist
-func (r *P2CodeSchedulingManifestReconciler) createPlacement(ctx context.Context, name string, placementRules []metav1.LabelSelectorRequirement, controllerReference metav1.Object) error {
+func (r *P2CodeSchedulingManifestReconciler) createPlacement(ctx context.Context, options PlacementOptions) error {
 	placement := &clusterv1beta1.Placement{}
-	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: P2CodeSchedulerNamespace}, placement)
+	err := r.Get(ctx, types.NamespacedName{Name: options.name, Namespace: P2CodeSchedulerNamespace}, placement)
 
 	if err != nil && apierrors.IsNotFound(err) {
 		var numClusters int32 = 1
 
-		placement := &clusterv1beta1.Placement{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: P2CodeSchedulerNamespace,
-			},
-			Spec: clusterv1beta1.PlacementSpec{
-				NumberOfClusters: &numClusters,
-				ClusterSets: []string{
-					"global",
-				},
-				Predicates: []clusterv1beta1.ClusterPredicate{
-					{
-						RequiredClusterSelector: clusterv1beta1.ClusterSelector{
-							ClaimSelector: clusterv1beta1.ClusterClaimSelector{
-								MatchExpressions: placementRules,
-							},
-						},
-					},
-				},
+		spec := clusterv1beta1.PlacementSpec{
+			NumberOfClusters: &numClusters,
+			ClusterSets: []string{
+				"global",
 			},
 		}
 
-		if err = ctrl.SetControllerReference(controllerReference, placement, r.Scheme); err != nil {
+		if options.clusterPredicates != nil {
+			spec.Predicates = []clusterv1beta1.ClusterPredicate{
+				{
+					RequiredClusterSelector: clusterv1beta1.ClusterSelector{
+						ClaimSelector: clusterv1beta1.ClusterClaimSelector{
+							MatchExpressions: options.clusterPredicates,
+						},
+					},
+				},
+			}
+		}
+
+		placement := &clusterv1beta1.Placement{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      options.name,
+				Namespace: P2CodeSchedulerNamespace,
+			},
+			Spec: spec,
+		}
+
+		if err = ctrl.SetControllerReference(options.controllerReference, placement, r.Scheme); err != nil {
 			return fmt.Errorf("failed to set controller reference for placement")
 		}
 
