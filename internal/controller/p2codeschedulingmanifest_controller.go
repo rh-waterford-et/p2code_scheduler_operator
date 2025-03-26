@@ -827,7 +827,6 @@ func assignWorkloadAnnotations(workloads []*Resource, workloadAnnotations []sche
 			return fmt.Errorf("invalid workload name for workload annotation %d", index+1)
 		} else {
 			workload.p2codeSchedulingAnnotations = workloadAnnotation.Annotations
-			break
 		}
 	}
 	return nil
