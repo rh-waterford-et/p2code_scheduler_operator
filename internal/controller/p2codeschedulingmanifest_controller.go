@@ -146,7 +146,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Validate that the P2CodeSchedulingManifest instance is in the correct namespace
 	if req.Namespace != P2CodeSchedulerNamespace {
 		errorTitle := "incorrect namespace"
-		errorMessage := "ignoring resource as it is not in the p2code-scheduler-system namespace"
+		errorMessage := "Ignoring resource as it is not in the p2code-scheduler-system namespace"
 
 		err := fmt.Errorf("%s", errorTitle)
 		log.Error(err, errorMessage)
@@ -342,10 +342,13 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	// All manifests specified within the P2CodeSchedulingManifest spec must be successfully placed
 	// If one manifest fails to be placed, no other manifest should run as the overall scheduling strategy failed
-	// Since all manifests are contained within a bundle verify that all bundles have a placement decision before creating the corresponding ManifestWorks
+	// Since all manifests should be contained within a bundle verify that all bundles have a placement decision before creating the corresponding ManifestWorks
 	log.Info("Verifying all bundles have placement decision")
 	manifestWorkList := []workv1.ManifestWork{}
+	placedManifests := 0
 	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+		placedManifests += len(bundle.manifests)
+
 		// Fetch placement to get the latest status and placement decision
 		placement := &clusterv1beta1.Placement{}
 		err = r.Get(ctx, types.NamespacedName{Name: bundle.placementName, Namespace: P2CodeSchedulerNamespace}, placement)
@@ -399,6 +402,25 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Info("Placement decision not ready yet, requeuing")
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
+	}
+
+	// Ensure there are no orphaned manifests
+	// Orphaned manifests can arise if there are ancillary services that are not referenced by a workload resource and are therefore not added to a bundle
+	if len(p2CodeSchedulingManifest.Spec.Manifests) != placedManifests {
+		errorTitle := "orphaned manifest"
+		errorMessage := "Orphaned manifests found. Ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
+
+		err := fmt.Errorf("%s", errorTitle)
+		log.Error(err, errorMessage)
+
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, err
 	}
 
 	// Create ManifestWorks
