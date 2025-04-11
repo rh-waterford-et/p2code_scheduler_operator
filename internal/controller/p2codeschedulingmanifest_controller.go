@@ -46,6 +46,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
+	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
@@ -109,6 +110,7 @@ type NoNamespaceError struct {
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=placements,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=placementdecisions,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ac3.redhat.com,resources=ac3networks,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -122,13 +124,42 @@ type NoNamespaceError struct {
 func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
+	ac3Network := &networkoperatorv1alpha1.AC3Network{}
+	err := r.Get(ctx, types.NamespacedName{Name: "sample-network", Namespace: P2CodeSchedulerNamespace}, ac3Network)
+	if err != nil && apierrors.IsNotFound(err) {
+		log.Info("Creating AC3Network resource")
+		ac3Network = &networkoperatorv1alpha1.AC3Network{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "sample-network",
+				Namespace: P2CodeSchedulerNamespace,
+			},
+			Spec: networkoperatorv1alpha1.AC3NetworkSpec{
+				Link: networkoperatorv1alpha1.AC3Link{
+					SourceCluster:   "cluster1",
+					TargetCluster:   "cluster2",
+					SourceNamespace: "namespace1",
+					TargetNamespace: []string{"namespace2"},
+					Applications:    []string{"application1"},
+					SecretNamespace: "namespace1",
+				},
+			},
+		}
+
+		if err := r.Create(ctx, ac3Network); err != nil {
+			log.Error(err, "Failed to create AC3Network")
+			return ctrl.Result{}, err
+		}
+	} else if err != nil {
+		log.Error(err, "Failed to retrieve AC3Network")
+	}
+
 	if r.Bundles == nil {
 		r.Bundles = make(map[string][]*Bundle)
 	}
 
 	// Get P2CodeSchedulingManifest instance
 	p2CodeSchedulingManifest := &schedulingv1alpha1.P2CodeSchedulingManifest{}
-	err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest)
+	err = r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Stop reconciliation if the resource is not found or has been deleted
