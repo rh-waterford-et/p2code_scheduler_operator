@@ -37,6 +37,7 @@ import (
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
 	"github.com/PoolPooer/p2code-scheduler/internal/controller"
+	"github.com/PoolPooer/p2code-scheduler/utils"
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
@@ -168,9 +169,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	isInstalled, err := utils.IsCRDInstalled(mgr.GetRESTMapper(), networkoperatorv1alpha1.GroupVersion.WithKind("AC3Network"))
+	if err != nil || !isInstalled {
+		setupLog.Error(err, "AC3Network API is not installed, scheduler may not perform as expected")
+	}
+
+	// All set up operations and checks must be performed before starting the manager since it is a blocking function
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+
 }
