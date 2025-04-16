@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -54,6 +55,7 @@ import (
 const finalizer = "scheduling.p2code.eu/finalizer"
 const ownershipLabel = "scheduling.p2code.eu/owner"
 const P2CodeSchedulerNamespace = "p2code-scheduler-system"
+const AC3NetworkNamespace = "ac3no-system"
 
 // Status conditions corresponding to the state of the P2CodeSchedulingManifest
 const (
@@ -89,9 +91,10 @@ type ResourceCollection struct {
 }
 
 type Bundle struct {
-	name          string
-	manifests     []runtime.RawExtension
-	placementName string
+	name                string
+	manifests           []runtime.RawExtension
+	placementName       string
+	externalConnections []string
 }
 
 type PlacementOptions struct {
@@ -125,22 +128,23 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	log := log.FromContext(ctx)
 
 	ac3Network := &networkoperatorv1alpha1.AC3Network{}
-	err := r.Get(ctx, types.NamespacedName{Name: "sample-network", Namespace: P2CodeSchedulerNamespace}, ac3Network)
+	err := r.Get(ctx, types.NamespacedName{Name: "sample-network", Namespace: AC3NetworkNamespace}, ac3Network)
 	if err != nil && apierrors.IsNotFound(err) {
 		log.Info("Creating AC3Network resource")
 		ac3Network = &networkoperatorv1alpha1.AC3Network{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "sample-network",
-				Namespace: P2CodeSchedulerNamespace,
+				Namespace: AC3NetworkNamespace,
 			},
 			Spec: networkoperatorv1alpha1.AC3NetworkSpec{
-				Link: networkoperatorv1alpha1.AC3Link{
-					SourceCluster:   "cluster1",
-					TargetCluster:   "cluster2",
-					SourceNamespace: "namespace1",
-					TargetNamespace: []string{"namespace2"},
-					Applications:    []string{"application1"},
-					SecretNamespace: "namespace1",
+				Links: []networkoperatorv1alpha1.AC3Link{
+					{
+						SourceCluster:   "cluster1",
+						TargetCluster:   "cluster2",
+						SourceNamespace: "namespace1",
+						TargetNamespace: "namespace2",
+						Services:        []string{"service1"},
+					},
 				},
 			},
 		}
@@ -338,7 +342,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			if err != nil {
 				message := fmt.Sprintf("Analysing workload %s for its ancillary resources", workload.name)
 				log.Info(message)
-				ancillaryManifests, err := bundleAncillaryManifests(*workload, resourceCollection.ancillaryResources)
+				ancillaryManifests, externalConnections, err := analyseWorkload(*workload, resourceCollection.ancillaryResources)
 				var noNamespaceErr *NoNamespaceError
 				if errors.As(err, &noNamespaceErr) {
 					errorMessage := "Namespace omitted"
@@ -361,7 +365,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				bundleManifests := []runtime.RawExtension{}
 				bundleManifests = append(bundleManifests, workload.manifest)
 				bundleManifests = append(bundleManifests, ancillaryManifests...)
-				bundle = &Bundle{name: workload.name, manifests: bundleManifests}
+				bundle = &Bundle{name: workload.name, manifests: bundleManifests, externalConnections: externalConnections}
 				r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
 			}
 
@@ -524,21 +528,22 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 }
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
-func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) ([]runtime.RawExtension, error) {
+func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]runtime.RawExtension, []string, error) {
 	// Manifests is a map of raw manifests for ancillary resources that should be bundled with the workload
 	// The name of the raw manifest is the key for this map
 	manifests := map[string]runtime.RawExtension{}
+	externalConnections := []string{}
 
 	if workload.namespace == "" {
 		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.name)
-		return []runtime.RawExtension{}, &NoNamespaceError{errorMessage}
+		return []runtime.RawExtension{}, []string{}, &NoNamespaceError{errorMessage}
 	}
 
 	if workload.namespace != "default" {
 		if _, ok := manifests[workload.namespace]; !ok {
 			namespaceResource, err := getResourceByKind(ancillaryResources, workload.namespace, "Namespace")
 			if err != nil {
-				return []runtime.RawExtension{}, err
+				return []runtime.RawExtension{}, []string{}, err
 			}
 
 			manifests[workload.namespace] = namespaceResource.manifest
@@ -547,7 +552,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 
 	podSpec, err := extractPodSpec(workload)
 	if err != nil {
-		return []runtime.RawExtension{}, err
+		return []runtime.RawExtension{}, []string{}, err
 	}
 
 	// TODO suport later imagePullSecrets
@@ -561,7 +566,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 				if _, ok := manifests[volume.PersistentVolumeClaim.ClaimName]; !ok {
 					pvcResource, err := getResourceByKind(ancillaryResources, volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
 					if err != nil {
-						return []runtime.RawExtension{}, err
+						return []runtime.RawExtension{}, []string{}, err
 					}
 
 					manifests[volume.PersistentVolumeClaim.ClaimName] = pvcResource.manifest
@@ -578,7 +583,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 				if _, ok := manifests[volume.ConfigMap.Name]; !ok {
 					cmResource, err := getResourceByKind(ancillaryResources, volume.ConfigMap.Name, "ConfigMap")
 					if err != nil {
-						return []runtime.RawExtension{}, err
+						return []runtime.RawExtension{}, []string{}, err
 					}
 
 					manifests[volume.ConfigMap.Name] = cmResource.manifest
@@ -589,7 +594,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 				if _, ok := manifests[volume.Secret.SecretName]; !ok {
 					secretResource, err := getResourceByKind(ancillaryResources, volume.Secret.SecretName, "Secret")
 					if err != nil {
-						return []runtime.RawExtension{}, err
+						return []runtime.RawExtension{}, []string{}, err
 					}
 
 					manifests[volume.Secret.SecretName] = secretResource.manifest
@@ -602,7 +607,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 		if _, ok := manifests[podSpec.ServiceAccountName]; !ok {
 			saResource, err := getResourceByKind(ancillaryResources, podSpec.ServiceAccountName, "ServiceAccount")
 			if err != nil {
-				return []runtime.RawExtension{}, err
+				return []runtime.RawExtension{}, []string{}, err
 			}
 
 			manifests[podSpec.ServiceAccountName] = saResource.manifest
@@ -621,7 +626,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 					if _, ok := manifests[envSource.ConfigMapRef.Name]; !ok {
 						cmResource, err := getResourceByKind(ancillaryResources, envSource.ConfigMapRef.Name, "ConfigMap")
 						if err != nil {
-							return []runtime.RawExtension{}, err
+							return []runtime.RawExtension{}, []string{}, err
 						}
 
 						manifests[envSource.ConfigMapRef.Name] = cmResource.manifest
@@ -632,7 +637,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 					if _, ok := manifests[envSource.SecretRef.Name]; !ok {
 						secretResource, err := getResourceByKind(ancillaryResources, envSource.SecretRef.Name, "Secret")
 						if err != nil {
-							return []runtime.RawExtension{}, err
+							return []runtime.RawExtension{}, []string{}, err
 						}
 
 						manifests[envSource.SecretRef.Name] = secretResource.manifest
@@ -648,7 +653,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 						if _, ok := manifests[envVar.ValueFrom.ConfigMapKeyRef.Name]; !ok {
 							cmResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
 							if err != nil {
-								return []runtime.RawExtension{}, err
+								return []runtime.RawExtension{}, []string{}, err
 							}
 
 							manifests[envVar.ValueFrom.ConfigMapKeyRef.Name] = cmResource.manifest
@@ -659,12 +664,17 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 						if _, ok := manifests[envVar.ValueFrom.SecretKeyRef.Name]; !ok {
 							secretResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.SecretKeyRef.Name, "Secret")
 							if err != nil {
-								return []runtime.RawExtension{}, err
+								return []runtime.RawExtension{}, []string{}, err
 							}
 
 							manifests[envVar.ValueFrom.SecretKeyRef.Name] = secretResource.manifest
 						}
 					}
+				} else if envVar.Value != "" && isExternalConnectionReference(envVar.Value) {
+					// If the workload contains an environment variable that references a service append it to the externalConnections list
+					// This list is later used to create AC3Network resources to expose service across clusters if required
+					serviceName := strings.Split(envVar.Value, ":")[0]
+					externalConnections = append(externalConnections, serviceName)
 				}
 			}
 		}
@@ -679,13 +689,13 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return []runtime.RawExtension{}, err
+			return []runtime.RawExtension{}, []string{}, err
 		}
 
 		if _, ok := manifests[statefulset.Spec.ServiceName]; !ok {
 			svcResource, err := getResourceByKind(ancillaryResources, statefulset.Spec.ServiceName, "Service")
 			if err != nil {
-				return []runtime.RawExtension{}, err
+				return []runtime.RawExtension{}, []string{}, err
 			}
 
 			manifests[statefulset.Spec.ServiceName] = svcResource.manifest
@@ -696,7 +706,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 		for _, service := range services {
 			svc := &corev1.Service{}
 			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return []runtime.RawExtension{}, err
+				return []runtime.RawExtension{}, []string{}, err
 			}
 
 			if len(svc.Spec.Selector) > 0 {
@@ -713,7 +723,7 @@ func bundleAncillaryManifests(workload Resource, ancillaryResources []Resource) 
 		}
 	}
 
-	return slices.Collect(maps.Values(manifests)), nil
+	return slices.Collect(maps.Values(manifests)), externalConnections, nil
 }
 
 func categoriseManifests(manifests []runtime.RawExtension) (ResourceCollection, error) {
@@ -780,6 +790,14 @@ func isPlacementSatisfied(conditions []metav1.Condition) bool {
 		}
 	}
 	return satisfied
+}
+
+// Check if a given string is of the format serviceName:port where
+// serviceName must only contain lowercase alphanumeric characters or hyphens adhering to Kubernetes naming conventions
+// and port corresponds to any valid network port
+func isExternalConnectionReference(s string) bool {
+	r, _ := regexp.Compile("^[a-z0-9/-]+:[0-9]+$")
+	return r.MatchString(s)
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getBundle(bundleName string, ownerReference string) (*Bundle, error) {
