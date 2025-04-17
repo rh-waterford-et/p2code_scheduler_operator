@@ -95,6 +95,7 @@ type Bundle struct {
 	manifests           []runtime.RawExtension
 	placementName       string
 	externalConnections []string
+	clusterName         string
 }
 
 type PlacementOptions struct {
@@ -405,18 +406,20 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Info(infoMessage)
 
 			if isPlacementSatisfied(placement.Status.Conditions) {
-				manifestWorkNamespace, err := r.getSelectedCluster(ctx, placement)
+				clusterName, err := r.getSelectedCluster(ctx, placement)
 				if err != nil {
 					log.Error(err, "Unable to read placement decision for placement")
 					return ctrl.Result{}, err
 				}
 
+				bundle.clusterName = clusterName
+
 				manifestWork := &workv1.ManifestWork{}
 				manifestWorkName := fmt.Sprintf("%s-bundle-manifestwork", bundle.name)
-				err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: manifestWorkNamespace}, manifestWork)
+				err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: clusterName}, manifestWork)
 				// Define ManifestWork to be created if a ManifestWork doesnt exist for this bundle
 				if err != nil && apierrors.IsNotFound(err) {
-					newManifestWork, err := r.generateManifestWorkForBundle(manifestWorkName, manifestWorkNamespace, p2CodeSchedulingManifest.Name, bundle.manifests)
+					newManifestWork, err := r.generateManifestWorkForBundle(manifestWorkName, clusterName, p2CodeSchedulingManifest.Name, bundle.manifests)
 					var noNamespaceErr *NoNamespaceError
 					if errors.As(err, &noNamespaceErr) {
 						errorMessage := "Namespace omitted"
@@ -439,7 +442,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					manifestWorkList = append(manifestWorkList, newManifestWork)
 				}
 
-				infoMessage := fmt.Sprintf("Placement decision ready for bundle based on %s workload, bundle to be deployed on %s cluster", bundle.name, manifestWorkNamespace)
+				infoMessage := fmt.Sprintf("Placement decision ready for bundle based on %s workload, bundle to be deployed on %s cluster", bundle.name, clusterName)
 				log.Info(infoMessage)
 
 			} else {
@@ -500,20 +503,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	schedulingDecisions := []schedulingv1alpha1.SchedulingDecision{}
 	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
-		placement := &clusterv1beta1.Placement{}
-		err = r.Get(ctx, types.NamespacedName{Name: bundle.placementName, Namespace: P2CodeSchedulerNamespace}, placement)
-		if err != nil {
-			log.Error(err, "Failed to fetch Placement")
-			return ctrl.Result{}, err
-		}
-
-		clusterSelected, err := r.getSelectedCluster(ctx, placement)
-		if err != nil {
-			log.Error(err, "Unable to read placement decision for placement")
-			return ctrl.Result{}, err
-		}
-
-		decision := schedulingv1alpha1.SchedulingDecision{WorkloadName: bundle.name, ClusterSelected: clusterSelected}
+		decision := schedulingv1alpha1.SchedulingDecision{WorkloadName: bundle.name, ClusterSelected: bundle.clusterName}
 		schedulingDecisions = append(schedulingDecisions, decision)
 	}
 
