@@ -57,6 +57,7 @@ const finalizer = "scheduling.p2code.eu/finalizer"
 const ownershipLabel = "scheduling.p2code.eu/owner"
 const P2CodeSchedulerNamespace = "p2code-scheduler-system"
 const AC3NetworkNamespace = "ac3no-system"
+const AC3NetworkResourceName = "application-connectivity-definitions"
 
 // Status conditions corresponding to the state of the P2CodeSchedulingManifest
 const (
@@ -72,7 +73,7 @@ type P2CodeSchedulingManifestReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
-	Bundles  map[string][]*Bundle
+	Bundles  []*Bundle
 }
 
 type ManifestMetadata struct {
@@ -88,14 +89,9 @@ type Resource struct {
 	manifest                    runtime.RawExtension
 }
 
-type ResourceCollection struct {
-	workloads          []*Resource
-	ancillaryResources []Resource
-}
-
 type Bundle struct {
 	name                string
-	resources           []Resource
+	resources           []*Resource
 	placementName       string
 	externalConnections []string
 	clusterName         string
@@ -109,6 +105,13 @@ type PlacementOptions struct {
 
 type NoNamespaceError struct {
 	message string
+}
+
+type NetworkPath struct {
+	sourceCluster   string
+	sourceNamespace string
+	targetCluster   string
+	targetNamespace string
 }
 
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests,verbs=get;list;watch;create;update;patch;delete
@@ -131,43 +134,13 @@ type NoNamespaceError struct {
 func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	ac3Network := &networkoperatorv1alpha1.AC3Network{}
-	err := r.Get(ctx, types.NamespacedName{Name: "sample-network", Namespace: AC3NetworkNamespace}, ac3Network)
-	if err != nil && apierrors.IsNotFound(err) {
-		log.Info("Creating AC3Network resource")
-		ac3Network = &networkoperatorv1alpha1.AC3Network{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "sample-network",
-				Namespace: AC3NetworkNamespace,
-			},
-			Spec: networkoperatorv1alpha1.AC3NetworkSpec{
-				Links: []networkoperatorv1alpha1.AC3Link{
-					{
-						SourceCluster:   "cluster1",
-						TargetCluster:   "cluster2",
-						SourceNamespace: "namespace1",
-						TargetNamespace: "namespace2",
-						Services:        []string{"service1"},
-					},
-				},
-			},
-		}
-
-		if err := r.Create(ctx, ac3Network); err != nil {
-			log.Error(err, "Failed to create AC3Network")
-			return ctrl.Result{}, err
-		}
-	} else if err != nil {
-		log.Error(err, "Failed to retrieve AC3Network")
-	}
-
 	if r.Bundles == nil {
-		r.Bundles = make(map[string][]*Bundle)
+		r.Bundles = []*Bundle{}
 	}
 
 	// Get P2CodeSchedulingManifest instance
 	p2CodeSchedulingManifest := &schedulingv1alpha1.P2CodeSchedulingManifest{}
-	err = r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest)
+	err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			// Stop reconciliation if the resource is not found or has been deleted
@@ -183,6 +156,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
+		}
+
+		// Refetch P2CodeSchedulingManifest instance to get the latest state of the resource
+		if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
 			return ctrl.Result{}, err
 		}
 	}
@@ -240,7 +219,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				return ctrl.Result{}, err
 			}
 
-			r.deleteBundles(p2CodeSchedulingManifest.Name)
+			r.deleteBundles()
 
 			// Fetch updated P2CodeSchedulingManifest instance
 			if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
@@ -284,11 +263,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Later take into account the resource requests of each workload
 	if len(p2CodeSchedulingManifest.Spec.GlobalAnnotations) == 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
 		// Check if a default bundle already exists
-		_, err := r.getBundle("default", p2CodeSchedulingManifest.Name)
+		_, err := r.getBundle("default")
 		if err != nil {
 			log.Info("Creating default placement for all manifests")
 			bundle := &Bundle{name: "default", resources: resources}
-			r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
+			r.Bundles = append(r.Bundles, bundle)
 			placementName := "default-placement"
 			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest}); err != nil {
 				log.Error(err, "Failed to create placement")
@@ -307,11 +286,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// If no workload annotations are specified but global annotations are provided all manifests are scheduled to a cluster matching the global annotations
 	if len(p2CodeSchedulingManifest.Spec.GlobalAnnotations) > 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
 		// Check if a global bundle already exists
-		_, err := r.getBundle("global", p2CodeSchedulingManifest.Name)
+		_, err := r.getBundle("global")
 		if err != nil {
 			log.Info("Creating global placement for all manifests")
 			bundle := &Bundle{name: "global", resources: resources}
-			r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
+			r.Bundles = append(r.Bundles, bundle)
 			placementName := "global-placement"
 			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest, clusterPredicates: commonPlacementRules}); err != nil {
 				log.Error(err, "Failed to create placement")
@@ -344,7 +323,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		for _, workload := range workloads {
 			// Check if a bundle already exists for the workload
 			// Create a bundle for the workload if needed and find its ancillary resources
-			bundle, err := r.getBundle(workload.metadata.name, p2CodeSchedulingManifest.Name)
+			bundle, err := r.getBundle(workload.metadata.name)
 			if err != nil {
 				message := fmt.Sprintf("Analysing workload %s for its ancillary resources", workload.metadata.name)
 				log.Info(message)
@@ -368,11 +347,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					return ctrl.Result{}, err
 				}
 
-				bundleResources := []Resource{}
+				bundleResources := []*Resource{}
 				bundleResources = append(bundleResources, workload)
 				bundleResources = append(bundleResources, workloadAncillaryResources...)
 				bundle = &Bundle{name: workload.metadata.name, resources: bundleResources, externalConnections: externalConnections}
-				r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
+				r.Bundles = append(r.Bundles, bundle)
 			}
 
 			placementName := fmt.Sprintf("%s-bundle-placement", workload.metadata.name)
@@ -395,7 +374,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	log.Info("Verifying all bundles have placement decision")
 	manifestWorkList := []workv1.ManifestWork{}
 	placedManifests := 0
-	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+	for _, bundle := range r.Bundles {
 		placedManifests += len(bundle.resources)
 
 		// Fetch placement to get the latest status and placement decision
@@ -476,7 +455,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	// Ensure there are no orphaned manifests
 	// Orphaned manifests can arise if there are ancillary services that are not referenced by a workload resource and are therefore not added to a bundle
-	if len(p2CodeSchedulingManifest.Spec.Manifests) != placedManifests {
+	// If there are more manifests in the CR than the count of manifests across all ManifestWorks this indicates that some manifests are unaccounted for
+	// It is unlikely that the values are equal since an ancillary manifest can be included in many ManifestWorks
+	if len(p2CodeSchedulingManifest.Spec.Manifests) > placedManifests {
 		errorTitle := "orphaned manifest"
 		errorMessage := "Orphaned manifests found. Ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
 
@@ -507,9 +488,19 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	log.Info(message)
 
 	schedulingDecisions := []schedulingv1alpha1.SchedulingDecision{}
-	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+	for _, bundle := range r.Bundles {
 		decision := schedulingv1alpha1.SchedulingDecision{WorkloadName: bundle.name, ClusterSelected: bundle.clusterName}
 		schedulingDecisions = append(schedulingDecisions, decision)
+
+		if err := r.setNetworkLinks(ctx, *bundle); err != nil {
+			log.Error(err, "An error occurred while establishing network connections to ensure application connectivity across clusters")
+		}
+	}
+
+	// Refetch P2CodeSchedulingManifest instance before updating the status
+	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+		log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
+		return ctrl.Result{}, err
 	}
 
 	meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeSchedulingSucceeded, Status: metav1.ConditionTrue, Reason: "SchedulingSuccessful", Message: message})
@@ -523,31 +514,31 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 }
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
-func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resource, []string, error) {
+func analyseWorkload(workload *Resource, ancillaryResources []*Resource) ([]*Resource, []string, error) {
 	// Resources is a map of ancillary resources that should be bundled with the workload
 	// The resource name is the key for this map
-	resources := map[string]Resource{}
+	resources := map[string]*Resource{}
 	externalConnections := []string{}
 
 	if workload.metadata.namespace == "" {
 		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.metadata.name)
-		return []Resource{}, []string{}, &NoNamespaceError{errorMessage}
+		return []*Resource{}, []string{}, &NoNamespaceError{errorMessage}
 	}
 
 	if workload.metadata.namespace != "default" {
 		if _, ok := resources[workload.metadata.namespace]; !ok {
 			namespaceResource, err := getResourceByKind(ancillaryResources, workload.metadata.namespace, "Namespace")
 			if err != nil {
-				return []Resource{}, []string{}, err
+				return []*Resource{}, []string{}, err
 			}
 
-			resources[workload.metadata.namespace] = *namespaceResource
+			resources[workload.metadata.namespace] = namespaceResource
 		}
 	}
 
-	podSpec, err := extractPodSpec(workload)
+	podSpec, err := extractPodSpec(*workload)
 	if err != nil {
-		return []Resource{}, []string{}, err
+		return []*Resource{}, []string{}, err
 	}
 
 	// TODO suport later imagePullSecrets
@@ -561,10 +552,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 				if _, ok := resources[volume.PersistentVolumeClaim.ClaimName]; !ok {
 					pvcResource, err := getResourceByKind(ancillaryResources, volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
 					if err != nil {
-						return []Resource{}, []string{}, err
+						return []*Resource{}, []string{}, err
 					}
 
-					resources[volume.PersistentVolumeClaim.ClaimName] = *pvcResource
+					resources[volume.PersistentVolumeClaim.ClaimName] = pvcResource
 				}
 
 				// Later check for storage class
@@ -578,10 +569,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 				if _, ok := resources[volume.ConfigMap.Name]; !ok {
 					cmResource, err := getResourceByKind(ancillaryResources, volume.ConfigMap.Name, "ConfigMap")
 					if err != nil {
-						return []Resource{}, []string{}, err
+						return []*Resource{}, []string{}, err
 					}
 
-					resources[volume.ConfigMap.Name] = *cmResource
+					resources[volume.ConfigMap.Name] = cmResource
 				}
 			}
 
@@ -589,10 +580,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 				if _, ok := resources[volume.Secret.SecretName]; !ok {
 					secretResource, err := getResourceByKind(ancillaryResources, volume.Secret.SecretName, "Secret")
 					if err != nil {
-						return []Resource{}, []string{}, err
+						return []*Resource{}, []string{}, err
 					}
 
-					resources[volume.Secret.SecretName] = *secretResource
+					resources[volume.Secret.SecretName] = secretResource
 				}
 			}
 		}
@@ -602,10 +593,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 		if _, ok := resources[podSpec.ServiceAccountName]; !ok {
 			saResource, err := getResourceByKind(ancillaryResources, podSpec.ServiceAccountName, "ServiceAccount")
 			if err != nil {
-				return []Resource{}, []string{}, err
+				return []*Resource{}, []string{}, err
 			}
 
-			resources[podSpec.ServiceAccountName] = *saResource
+			resources[podSpec.ServiceAccountName] = saResource
 		}
 	}
 
@@ -621,10 +612,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 					if _, ok := resources[envSource.ConfigMapRef.Name]; !ok {
 						cmResource, err := getResourceByKind(ancillaryResources, envSource.ConfigMapRef.Name, "ConfigMap")
 						if err != nil {
-							return []Resource{}, []string{}, err
+							return []*Resource{}, []string{}, err
 						}
 
-						resources[envSource.ConfigMapRef.Name] = *cmResource
+						resources[envSource.ConfigMapRef.Name] = cmResource
 					}
 				}
 
@@ -632,10 +623,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 					if _, ok := resources[envSource.SecretRef.Name]; !ok {
 						secretResource, err := getResourceByKind(ancillaryResources, envSource.SecretRef.Name, "Secret")
 						if err != nil {
-							return []Resource{}, []string{}, err
+							return []*Resource{}, []string{}, err
 						}
 
-						resources[envSource.SecretRef.Name] = *secretResource
+						resources[envSource.SecretRef.Name] = secretResource
 					}
 				}
 			}
@@ -648,10 +639,10 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 						if _, ok := resources[envVar.ValueFrom.ConfigMapKeyRef.Name]; !ok {
 							cmResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
 							if err != nil {
-								return []Resource{}, []string{}, err
+								return []*Resource{}, []string{}, err
 							}
 
-							resources[envVar.ValueFrom.ConfigMapKeyRef.Name] = *cmResource
+							resources[envVar.ValueFrom.ConfigMapKeyRef.Name] = cmResource
 						}
 					}
 
@@ -659,15 +650,15 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 						if _, ok := resources[envVar.ValueFrom.SecretKeyRef.Name]; !ok {
 							secretResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.SecretKeyRef.Name, "Secret")
 							if err != nil {
-								return []Resource{}, []string{}, err
+								return []*Resource{}, []string{}, err
 							}
 
-							resources[envVar.ValueFrom.SecretKeyRef.Name] = *secretResource
+							resources[envVar.ValueFrom.SecretKeyRef.Name] = secretResource
 						}
 					}
 				} else if envVar.Value != "" && isExternalConnectionReference(envVar.Value) {
 					// If the workload contains an environment variable that references a service append it to the externalConnections list
-					// This list is later used to create AC3Network resources to expose service across clusters if required
+					// This list is later used to create AC3Network resources to expose services across clusters if required
 					serviceName := strings.Split(envVar.Value, ":")[0]
 					externalConnections = append(externalConnections, serviceName)
 				}
@@ -684,16 +675,16 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return []Resource{}, []string{}, err
+			return []*Resource{}, []string{}, err
 		}
 
 		if _, ok := resources[statefulset.Spec.ServiceName]; !ok {
 			svcResource, err := getResourceByKind(ancillaryResources, statefulset.Spec.ServiceName, "Service")
 			if err != nil {
-				return []Resource{}, []string{}, err
+				return []*Resource{}, []string{}, err
 			}
 
-			resources[statefulset.Spec.ServiceName] = *svcResource
+			resources[statefulset.Spec.ServiceName] = svcResource
 		}
 	} else {
 		// Get a list of all services and check if the service selector matches the labels on the workload
@@ -701,7 +692,7 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 		for _, service := range services {
 			svc := &corev1.Service{}
 			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return []Resource{}, []string{}, err
+				return []*Resource{}, []string{}, err
 			}
 
 			if len(svc.Spec.Selector) > 0 {
@@ -721,8 +712,8 @@ func analyseWorkload(workload Resource, ancillaryResources []Resource) ([]Resour
 	return slices.Collect(maps.Values(resources)), externalConnections, nil
 }
 
-func bulkConvertToResource(manifests []runtime.RawExtension) ([]Resource, error) {
-	resources := []Resource{}
+func bulkConvertToResource(manifests []runtime.RawExtension) ([]*Resource, error) {
+	resources := []*Resource{}
 	for _, manifest := range manifests {
 		object := &unstructured.Unstructured{}
 		if err := object.UnmarshalJSON(manifest.Raw); err != nil {
@@ -730,12 +721,12 @@ func bulkConvertToResource(manifests []runtime.RawExtension) ([]Resource, error)
 		}
 
 		metadata := ManifestMetadata{name: object.GetName(), namespace: object.GetNamespace(), groupVersionKind: object.GetObjectKind().GroupVersionKind(), labels: object.GetLabels()}
-		resources = append(resources, Resource{metadata: metadata, manifest: manifest})
+		resources = append(resources, &Resource{metadata: metadata, manifest: manifest})
 	}
 	return resources, nil
 }
 
-func categoriseResources(resources []Resource) (workloads []Resource, ancillaryResources []Resource) {
+func categoriseResources(resources []*Resource) (workloads []*Resource, ancillaryResources []*Resource) {
 	for _, resource := range resources {
 		switch group := resource.metadata.groupVersionKind.Group; group {
 		// Ancillary resources are in the core API group
@@ -778,8 +769,8 @@ func (r *P2CodeSchedulingManifestReconciler) deleteOwnedManifestWorkList(ctx con
 	return nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) deleteBundles(ownerReference string) {
-	delete(r.Bundles, ownerReference)
+func (r *P2CodeSchedulingManifestReconciler) deleteBundles() {
+	r.Bundles = []*Bundle{}
 }
 
 func isPlacementSatisfied(conditions []metav1.Condition) bool {
@@ -803,8 +794,8 @@ func isExternalConnectionReference(s string) bool {
 	return r.MatchString(s)
 }
 
-func (r *P2CodeSchedulingManifestReconciler) getBundle(bundleName string, ownerReference string) (*Bundle, error) {
-	for _, bundle := range r.Bundles[ownerReference] {
+func (r *P2CodeSchedulingManifestReconciler) getBundle(bundleName string) (*Bundle, error) {
+	for _, bundle := range r.Bundles {
 		if bundle.name == bundleName {
 			return bundle, nil
 		}
@@ -848,25 +839,27 @@ func (r *P2CodeSchedulingManifestReconciler) createPlacement(ctx context.Context
 		}
 
 		if err = ctrl.SetControllerReference(options.controllerReference, placement, r.Scheme); err != nil {
-			return fmt.Errorf("failed to set controller reference for placement")
+			return fmt.Errorf("failed to set controller reference for placement: %w", err)
 		}
 
 		if err = r.Create(ctx, placement); err != nil {
-			return fmt.Errorf("failed to create Placement")
+			return fmt.Errorf("failed to create Placement: %w", err)
 		}
 
 	} else if err != nil {
-		return fmt.Errorf("failed to fetch Placement")
+		return fmt.Errorf("failed to fetch Placement: %w", err)
 	}
 
 	return nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources []Resource) (workv1.ManifestWork, error) {
+func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources []*Resource) (workv1.ManifestWork, error) {
 	manifestList := []workv1.Manifest{}
 
 	for _, resource := range bundeledResources {
-		if resource.metadata.namespace == "" {
+		// Ensure a namespace is defined for the resource
+		// Unless the resource is not namespaced eg namespace
+		if resource.metadata.namespace == "" && resource.metadata.groupVersionKind.Kind != "Namespace" {
 			errorMessage := fmt.Sprintf("invalid manifest, no namespace specified for %s %s", resource.metadata.name, resource.metadata.groupVersionKind.Kind)
 			return workv1.ManifestWork{}, &NoNamespaceError{errorMessage}
 		}
@@ -906,10 +899,128 @@ func (r *P2CodeSchedulingManifestReconciler) getSelectedCluster(ctx context.Cont
 	return placementDecision.Status.Decisions[0].ClusterName, nil
 }
 
-func assignWorkloadAnnotations(workloads []Resource, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
+func (r *P2CodeSchedulingManifestReconciler) fetchAC3Network(ctx context.Context) (*networkoperatorv1alpha1.AC3Network, error) {
+	ac3Network := &networkoperatorv1alpha1.AC3Network{}
+	err := r.Get(ctx, types.NamespacedName{Name: AC3NetworkResourceName, Namespace: AC3NetworkNamespace}, ac3Network)
+	// Create AC3Network if it doesnt exist
+	if err != nil && apierrors.IsNotFound(err) {
+		ac3Network = &networkoperatorv1alpha1.AC3Network{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      AC3NetworkResourceName,
+				Namespace: AC3NetworkNamespace,
+			},
+			Spec: networkoperatorv1alpha1.AC3NetworkSpec{
+				Links: []networkoperatorv1alpha1.AC3Link{},
+			},
+		}
+
+		if err := r.Create(ctx, ac3Network); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	}
+
+	return ac3Network, nil
+}
+
+func (r *P2CodeSchedulingManifestReconciler) setNetworkLinks(ctx context.Context, b Bundle) error {
+	if len(b.externalConnections) > 0 {
+		// Ensure the bundle contains a single workload resource
+		workloads, _ := categoriseResources(b.resources)
+		if len(workloads) > 1 {
+			return fmt.Errorf("bundle contains more than one workload, unable to identify the details of the network link")
+		}
+
+		type target struct {
+			cluster   string
+			namespace string
+		}
+
+		// Find service to fulfil the connection
+		externalConnectionDetails := map[string]target{}
+		for _, externalConnection := range b.externalConnections {
+			for _, bundle := range r.Bundles {
+				// Skip bundle b passed into function
+				if bundle.name == b.name {
+					continue
+				}
+
+				if service := bundle.getExternalService(externalConnection); service != nil {
+					externalConnectionDetails[externalConnection] = target{cluster: bundle.clusterName, namespace: service.metadata.namespace}
+				}
+			}
+		}
+
+		// TODO return here with error if cant find a service to match the externalconnection
+		// all or none, or some creation approach
+
+		// if len(externalConnectionDetails) != len(b.externalConnections) {
+		// 	return fmt.Errorf("cannot guarantee that all connections have been made")
+		// }
+
+		sourceCluster := b.clusterName
+		sourceNamespace := workloads[0].metadata.namespace
+
+		ac3Network, err := r.fetchAC3Network(ctx)
+		if err != nil {
+			return err
+		}
+
+		ac3Links := ac3Network.Spec.Links
+		for connectionName, connectionDetails := range externalConnectionDetails {
+			networkPath := NetworkPath{
+				sourceCluster:   sourceCluster,
+				sourceNamespace: sourceNamespace,
+				targetCluster:   connectionDetails.cluster,
+				targetNamespace: connectionDetails.namespace,
+			}
+			if isLinkRequired(networkPath) {
+				// Check if a link exists for a given network path
+				link := getAC3Link(ac3Links, networkPath)
+				if link != nil {
+					// Add connectionName to the link's list of services if necessary
+					if !slices.Contains(link.Services, connectionName) {
+						link.Services = append(link.Services, connectionName)
+					}
+				} else {
+					// Create new AC3Link
+					ac3Link := networkoperatorv1alpha1.AC3Link{
+						SourceCluster:   sourceCluster,
+						SourceNamespace: sourceNamespace,
+						TargetCluster:   connectionDetails.cluster,
+						TargetNamespace: connectionDetails.namespace,
+						Services:        []string{connectionName},
+					}
+
+					ac3Links = append(ac3Links, ac3Link)
+				}
+			}
+		}
+
+		// Update the AC3Network resource
+		ac3Network.Spec.Links = ac3Links
+		if err = r.Update(ctx, ac3Network); err != nil {
+			return err
+		}
+
+	}
+	return nil
+}
+
+func (b *Bundle) getExternalService(connectionName string) *Resource {
+	for _, service := range listResourceByKind(b.resources, "Service") {
+		if service.metadata.name == connectionName {
+			return service
+		}
+	}
+	return nil
+}
+
+func assignWorkloadAnnotations(workloads []*Resource, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
 	for index, workloadAnnotation := range workloadAnnotations {
 		if workload, err := getResource(workloads, workloadAnnotation.Name); err != nil {
-			return fmt.Errorf("invalid workload name for workload annotation %d", index+1)
+			return fmt.Errorf("invalid workload name for workload annotation %d: %w", index+1, err)
 		} else {
 			workload.p2codeSchedulingAnnotations = workloadAnnotation.Annotations
 		}
@@ -917,27 +1028,40 @@ func assignWorkloadAnnotations(workloads []Resource, workloadAnnotations []sched
 	return nil
 }
 
+func isLinkRequired(np NetworkPath) bool {
+	return !(np.sourceCluster == np.targetCluster && np.sourceNamespace == np.targetNamespace)
+}
+
+func getAC3Link(links []networkoperatorv1alpha1.AC3Link, np NetworkPath) *networkoperatorv1alpha1.AC3Link {
+	for _, link := range links {
+		if link.SourceCluster == np.sourceCluster && link.TargetCluster == np.targetCluster && link.SourceNamespace == np.sourceNamespace && link.TargetNamespace == np.targetNamespace {
+			return &link
+		}
+	}
+	return nil
+}
+
 // TODO might to consider namespace
-func getResource(resources []Resource, resourceName string) (*Resource, error) {
+func getResource(resources []*Resource, resourceName string) (*Resource, error) {
 	for _, resource := range resources {
 		if resource.metadata.name == resourceName {
-			return &resource, nil
+			return resource, nil
 		}
 	}
 	return nil, fmt.Errorf("cannot find a resource under manifests with the name %s", resourceName)
 }
 
-func getResourceByKind(resources []Resource, resourceName string, kind string) (*Resource, error) {
+func getResourceByKind(resources []*Resource, resourceName string, kind string) (*Resource, error) {
 	for _, resource := range resources {
 		if resource.metadata.groupVersionKind.Kind == kind && resource.metadata.name == resourceName {
-			return &resource, nil
+			return resource, nil
 		}
 	}
 	return nil, fmt.Errorf("cannot find a resource of type %s under manifests with the name %s", kind, resourceName)
 }
 
-func listResourceByKind(resources []Resource, kind string) []Resource {
-	list := []Resource{}
+func listResourceByKind(resources []*Resource, kind string) []*Resource {
+	list := []*Resource{}
 	for _, resource := range resources {
 		if resource.metadata.groupVersionKind.Kind == kind {
 			list = append(list, resource)
@@ -1012,7 +1136,7 @@ func (r *P2CodeSchedulingManifestReconciler) SetupWithManager(mgr ctrl.Manager) 
 		Owns(&clusterv1beta1.Placement{}).
 		Owns(&workv1.ManifestWork{}).
 		// Don't trigger the reconciler if an update doesnt change the metadata.generation field of the object being reconciled
-		// This means that an update event for the object's status section will no trigger the reconciler
+		// This means that an update event for the object's status section will not trigger the reconciler
 		WithEventFilter(predicate.GenerationChangedPredicate{}).
 		Complete(r)
 }
