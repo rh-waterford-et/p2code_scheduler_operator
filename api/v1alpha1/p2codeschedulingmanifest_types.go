@@ -22,7 +22,7 @@ import (
 )
 
 type WorkloadAnnotation struct {
-	// Name of Kubernetes workload to add annotations
+	// Name of Kubernetes workload to schedule according to Annotations
 	Name string `json:"name,omitempty"`
 	// List of annotations to associate with the named workload
 	Annotations []string `json:"annotations,omitempty"`
@@ -30,11 +30,19 @@ type WorkloadAnnotation struct {
 
 // P2CodeSchedulingManifestSpec defines the desired state of P2CodeSchedulingManifest
 type P2CodeSchedulingManifestSpec struct {
-	// TODO Description of global annotations
+	// Optional list of annotations applied to all manifests under Spec.Manifests
+	// Annotations must be of the form p2code.xx.yy=zz
+	// Filter annotations may be used to schedule to a clusters with a given feature
+	// Clusters can be filtered based on:
+	// - physical location (Europe, Greece, Italy)
+	// - Kubernetes distribution installed on the cluster (Kubernetes, OpenShift)
+	// - resource availability (GPUs, presence of edge devices)
 	GlobalAnnotations []string `json:"globalAnnotations,omitempty"`
-	// TODO Description of workload annotations
+	// Optional list of more granular annotations
+	// If a particular workload requires a specific annotation it should be specified here
+	// WorkloadAnnotations must follow the same format as GlobalAnnotations
 	WorkloadAnnotations []WorkloadAnnotation `json:"workloadAnnotations,omitempty"`
-	// TODO Description of manifests
+	// Required list of related manifests, much like a Helm Chart
 	Manifests []runtime.RawExtension `json:"manifests"`
 }
 
@@ -49,7 +57,7 @@ type SchedulingDecision struct {
 type P2CodeSchedulingManifestStatus struct {
 	// List of conditions for P2CodeSchedulingManifest
 	Conditions []metav1.Condition `json:"conditions"`
-	// List of scheduling decision made for each manifest taking into account the annotations specified
+	// List with scheduling decision made for each manifest taking into account the annotations specified
 	Decisions []SchedulingDecision `json:"decisions"`
 }
 
