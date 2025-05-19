@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -85,9 +84,11 @@ type Resource struct {
 	manifest                    runtime.RawExtension
 }
 
+type ResourceSet []*Resource
+
 type Bundle struct {
 	name                string
-	resources           []*Resource
+	resources           ResourceSet
 	placementName       string
 	externalConnections []string
 	clusterName         string
@@ -292,7 +293,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Check if any workload annotations specified
 	// Bundle workload and its ancillary resources with the annotation
 	if len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) > 0 {
-		workloads, ancillaryResources := categoriseResources(resources)
+		workloads, ancillaryResources := resources.Categorise()
 
 		// Ensure workloadAnnotations refer to a valid workload
 		if err := assignWorkloadAnnotations(workloads, p2CodeSchedulingManifest.Spec.WorkloadAnnotations); err != nil {
@@ -335,7 +336,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					return ctrl.Result{}, err
 				}
 
-				bundleResources := []*Resource{}
+				bundleResources := ResourceSet{}
 				bundleResources = append(bundleResources, workload)
 				bundleResources = append(bundleResources, workloadAncillaryResources...)
 				bundle = &Bundle{name: workload.metadata.name, resources: bundleResources, externalConnections: externalConnections}
@@ -498,31 +499,27 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 }
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
-func analyseWorkload(workload *Resource, ancillaryResources []*Resource) ([]*Resource, []string, error) {
-	// Resources is a map of ancillary resources that should be bundled with the workload
-	// The resource name is the key for this map
-	resources := map[string]*Resource{}
+func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []string, error) {
+	resources := ResourceSet{}
 	externalConnections := []string{}
 
 	if workload.metadata.namespace == "" {
 		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.metadata.name)
-		return []*Resource{}, []string{}, &NoNamespaceError{errorMessage}
+		return ResourceSet{}, []string{}, &NoNamespaceError{errorMessage}
 	}
 
 	if workload.metadata.namespace != "default" {
-		if _, ok := resources[workload.metadata.namespace]; !ok {
-			namespaceResource, err := getResourceByKind(ancillaryResources, workload.metadata.namespace, "Namespace")
-			if err != nil {
-				return []*Resource{}, []string{}, err
-			}
-
-			resources[workload.metadata.namespace] = namespaceResource
+		namespaceResource, err := ancillaryResources.Find(workload.metadata.namespace, "Namespace")
+		if err != nil {
+			return ResourceSet{}, []string{}, err
 		}
+
+		resources.Add(namespaceResource)
 	}
 
 	podSpec, err := extractPodSpec(*workload)
 	if err != nil {
-		return []*Resource{}, []string{}, err
+		return ResourceSet{}, []string{}, err
 	}
 
 	// TODO suport later imagePullSecrets
@@ -533,55 +530,47 @@ func analyseWorkload(workload *Resource, ancillaryResources []*Resource) ([]*Res
 	if len(podSpec.Volumes) > 0 {
 		for _, volume := range podSpec.Volumes {
 			if volume.PersistentVolumeClaim != nil {
-				if _, ok := resources[volume.PersistentVolumeClaim.ClaimName]; !ok {
-					pvcResource, err := getResourceByKind(ancillaryResources, volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
-					if err != nil {
-						return []*Resource{}, []string{}, err
-					}
-
-					resources[volume.PersistentVolumeClaim.ClaimName] = pvcResource
+				pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+				if err != nil {
+					return ResourceSet{}, []string{}, err
 				}
 
-				// Later check for storage class
-				// pvc := &corev1.PersistentVolumeClaim{}
-				// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
-				// 	return err
-				// }
+				resources.Add(pvcResource)
 			}
 
-			if volume.ConfigMap != nil {
-				if _, ok := resources[volume.ConfigMap.Name]; !ok {
-					cmResource, err := getResourceByKind(ancillaryResources, volume.ConfigMap.Name, "ConfigMap")
-					if err != nil {
-						return []*Resource{}, []string{}, err
-					}
+			// Later check for storage class
+			// pvc := &corev1.PersistentVolumeClaim{}
+			// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
+			// 	return err
+			// }
 
-					resources[volume.ConfigMap.Name] = cmResource
+			if volume.ConfigMap != nil {
+				cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
+				if err != nil {
+					return ResourceSet{}, []string{}, err
 				}
+
+				resources.Add(cmResource)
 			}
 
 			if volume.Secret != nil {
-				if _, ok := resources[volume.Secret.SecretName]; !ok {
-					secretResource, err := getResourceByKind(ancillaryResources, volume.Secret.SecretName, "Secret")
-					if err != nil {
-						return []*Resource{}, []string{}, err
-					}
-
-					resources[volume.Secret.SecretName] = secretResource
+				secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
+				if err != nil {
+					return ResourceSet{}, []string{}, err
 				}
+
+				resources.Add(secretResource)
 			}
 		}
 	}
 
 	if podSpec.ServiceAccountName != "" {
-		if _, ok := resources[podSpec.ServiceAccountName]; !ok {
-			saResource, err := getResourceByKind(ancillaryResources, podSpec.ServiceAccountName, "ServiceAccount")
-			if err != nil {
-				return []*Resource{}, []string{}, err
-			}
-
-			resources[podSpec.ServiceAccountName] = saResource
+		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
+		if err != nil {
+			return ResourceSet{}, []string{}, err
 		}
+
+		resources.Add(saResource)
 	}
 
 	// Examine Containers and InitContainers for ancillary resources
@@ -593,25 +582,21 @@ func analyseWorkload(workload *Resource, ancillaryResources []*Resource) ([]*Res
 		if len(container.EnvFrom) > 0 {
 			for _, envSource := range container.EnvFrom {
 				if envSource.ConfigMapRef != nil {
-					if _, ok := resources[envSource.ConfigMapRef.Name]; !ok {
-						cmResource, err := getResourceByKind(ancillaryResources, envSource.ConfigMapRef.Name, "ConfigMap")
-						if err != nil {
-							return []*Resource{}, []string{}, err
-						}
-
-						resources[envSource.ConfigMapRef.Name] = cmResource
+					cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
+					if err != nil {
+						return ResourceSet{}, []string{}, err
 					}
+
+					resources.Add(cmResource)
 				}
 
 				if envSource.SecretRef != nil {
-					if _, ok := resources[envSource.SecretRef.Name]; !ok {
-						secretResource, err := getResourceByKind(ancillaryResources, envSource.SecretRef.Name, "Secret")
-						if err != nil {
-							return []*Resource{}, []string{}, err
-						}
-
-						resources[envSource.SecretRef.Name] = secretResource
+					secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
+					if err != nil {
+						return ResourceSet{}, []string{}, err
 					}
+
+					resources.Add(secretResource)
 				}
 			}
 		}
@@ -620,25 +605,21 @@ func analyseWorkload(workload *Resource, ancillaryResources []*Resource) ([]*Res
 			for _, envVar := range container.Env {
 				if envVar.ValueFrom != nil {
 					if envVar.ValueFrom.ConfigMapKeyRef != nil {
-						if _, ok := resources[envVar.ValueFrom.ConfigMapKeyRef.Name]; !ok {
-							cmResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
-							if err != nil {
-								return []*Resource{}, []string{}, err
-							}
-
-							resources[envVar.ValueFrom.ConfigMapKeyRef.Name] = cmResource
+						cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
+						if err != nil {
+							return ResourceSet{}, []string{}, err
 						}
+
+						resources.Add(cmResource)
 					}
 
 					if envVar.ValueFrom.SecretKeyRef != nil {
-						if _, ok := resources[envVar.ValueFrom.SecretKeyRef.Name]; !ok {
-							secretResource, err := getResourceByKind(ancillaryResources, envVar.ValueFrom.SecretKeyRef.Name, "Secret")
-							if err != nil {
-								return []*Resource{}, []string{}, err
-							}
-
-							resources[envVar.ValueFrom.SecretKeyRef.Name] = secretResource
+						secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
+						if err != nil {
+							return ResourceSet{}, []string{}, err
 						}
+
+						resources.Add(secretResource)
 					}
 				}
 			}
@@ -654,73 +635,49 @@ func analyseWorkload(workload *Resource, ancillaryResources []*Resource) ([]*Res
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return []*Resource{}, []string{}, err
+			return ResourceSet{}, []string{}, err
 		}
 
-		if _, ok := resources[statefulset.Spec.ServiceName]; !ok {
-			svcResource, err := getResourceByKind(ancillaryResources, statefulset.Spec.ServiceName, "Service")
-			if err != nil {
-				return []*Resource{}, []string{}, err
-			}
-
-			resources[statefulset.Spec.ServiceName] = svcResource
+		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
+		if err != nil {
+			return ResourceSet{}, []string{}, err
 		}
+
+		resources.Add(svcResource)
 	} else {
 		// Get a list of all services and check if the service selector matches the labels on the workload
-		services := listResourceByKind(ancillaryResources, "Service")
+		services := ancillaryResources.FilterByKind("Service")
 		for _, service := range services {
 			svc := &corev1.Service{}
 			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return []*Resource{}, []string{}, err
+				return ResourceSet{}, []string{}, err
 			}
 
-			if len(svc.Spec.Selector) > 0 {
-				for k, v := range svc.Spec.Selector {
-					value, ok := workload.metadata.labels[k]
+			for k, v := range svc.Spec.Selector {
+				value, ok := workload.metadata.labels[k]
 
-					if ok && value == v {
-						if _, ok := resources[svc.Name]; !ok {
-							resources[svc.Name] = service
-						}
-					}
+				if ok && value == v {
+					resources.Add(service)
 				}
 			}
 		}
 	}
 
-	return slices.Collect(maps.Values(resources)), externalConnections, nil
+	return resources, externalConnections, nil
 }
 
-func bulkConvertToResource(manifests []runtime.RawExtension) ([]*Resource, error) {
-	resources := []*Resource{}
+func bulkConvertToResource(manifests []runtime.RawExtension) (ResourceSet, error) {
+	resources := ResourceSet{}
 	for _, manifest := range manifests {
 		object := &unstructured.Unstructured{}
 		if err := object.UnmarshalJSON(manifest.Raw); err != nil {
-			return resources, err
+			return ResourceSet{}, err
 		}
 
 		metadata := ManifestMetadata{name: object.GetName(), namespace: object.GetNamespace(), groupVersionKind: object.GetObjectKind().GroupVersionKind(), labels: object.GetLabels()}
-		resources = append(resources, &Resource{metadata: metadata, manifest: manifest})
+		resources.Add(&Resource{metadata: metadata, manifest: manifest})
 	}
 	return resources, nil
-}
-
-func categoriseResources(resources []*Resource) (workloads []*Resource, ancillaryResources []*Resource) {
-	for _, resource := range resources {
-		switch group := resource.metadata.groupVersionKind.Group; group {
-		// Ancillary resources are in the core API group
-		case "":
-			ancillaryResources = append(ancillaryResources, resource)
-		// Workload resources are in the apps API group
-		case "apps":
-			workloads = append(workloads, resource)
-		// Jobs and CronJobs in the batch API group are considered a workload resource
-		case "batch":
-			workloads = append(workloads, resource)
-		}
-	}
-
-	return
 }
 
 func (r *P2CodeSchedulingManifestReconciler) deleteOwnedManifestWorkList(ctx context.Context, schedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
@@ -824,7 +781,7 @@ func (r *P2CodeSchedulingManifestReconciler) createPlacement(ctx context.Context
 	return nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources []*Resource) (workv1.ManifestWork, error) {
+func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources ResourceSet) (workv1.ManifestWork, error) {
 	manifestList := []workv1.Manifest{}
 
 	for _, resource := range bundeledResources {
@@ -870,44 +827,15 @@ func (r *P2CodeSchedulingManifestReconciler) getSelectedCluster(ctx context.Cont
 	return placementDecision.Status.Decisions[0].ClusterName, nil
 }
 
-func assignWorkloadAnnotations(workloads []*Resource, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
+func assignWorkloadAnnotations(workloads ResourceSet, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
 	for index, workloadAnnotation := range workloadAnnotations {
-		if workload, err := getResource(workloads, workloadAnnotation.Name); err != nil {
+		if workload, err := workloads.FindWorkload(workloadAnnotation.Name); err != nil {
 			return fmt.Errorf("invalid workload name for workload annotation %d: %w", index+1, err)
 		} else {
 			workload.p2codeSchedulingAnnotations = workloadAnnotation.Annotations
 		}
 	}
 	return nil
-}
-
-// TODO might to consider namespace
-func getResource(resources []*Resource, resourceName string) (*Resource, error) {
-	for _, resource := range resources {
-		if resource.metadata.name == resourceName {
-			return resource, nil
-		}
-	}
-	return nil, fmt.Errorf("cannot find a resource under manifests with the name %s", resourceName)
-}
-
-func getResourceByKind(resources []*Resource, resourceName string, kind string) (*Resource, error) {
-	for _, resource := range resources {
-		if resource.metadata.groupVersionKind.Kind == kind && resource.metadata.name == resourceName {
-			return resource, nil
-		}
-	}
-	return nil, fmt.Errorf("cannot find a resource of type %s under manifests with the name %s", kind, resourceName)
-}
-
-func listResourceByKind(resources []*Resource, kind string) []*Resource {
-	list := []*Resource{}
-	for _, resource := range resources {
-		if resource.metadata.groupVersionKind.Kind == kind {
-			list = append(list, resource)
-		}
-	}
-	return list
 }
 
 // Assuming annotation being parsed is of the form p2code.filter.xx=yy
@@ -967,6 +895,69 @@ func extractPodSpec(workload Resource) (*corev1.PodSpec, error) {
 
 func (e NoNamespaceError) Error() string {
 	return e.message
+}
+
+func (r1 Resource) Equals(r2 Resource) bool {
+	return r1.metadata.name == r2.metadata.name && r1.metadata.namespace == r2.metadata.namespace && r1.metadata.groupVersionKind.Kind == r2.metadata.groupVersionKind.Kind
+}
+
+func (resourceSet *ResourceSet) Add(r *Resource) {
+	for _, resource := range *resourceSet {
+		if resource.Equals(*r) {
+			return
+		}
+	}
+
+	*resourceSet = append(*resourceSet, r)
+}
+
+func (resourceSet *ResourceSet) Find(name string, kind string) (*Resource, error) {
+	for _, resource := range resourceSet.FilterByKind(kind) {
+		if resource.metadata.name == name {
+			return resource, nil
+		}
+	}
+
+	return nil, fmt.Errorf("cannot find a resource of type %s with the name %s", kind, name)
+}
+
+func (resourceSet *ResourceSet) FindWorkload(name string) (*Resource, error) {
+	for _, resource := range *resourceSet {
+		if resource.metadata.name == name && (resource.metadata.groupVersionKind.Group == "apps" || resource.metadata.groupVersionKind.Group == "batch") {
+			return resource, nil
+		}
+	}
+
+	return nil, fmt.Errorf("cannot find a workload resource with the name %s", name)
+}
+
+func (resourceSet *ResourceSet) FilterByKind(kind string) ResourceSet {
+	list := ResourceSet{}
+	for _, resource := range *resourceSet {
+		if resource.metadata.groupVersionKind.Kind == kind {
+			list = append(list, resource)
+		}
+	}
+
+	return list
+}
+
+func (resourceSet *ResourceSet) Categorise() (workloads ResourceSet, ancillaryResources ResourceSet) {
+	for _, resource := range *resourceSet {
+		switch group := resource.metadata.groupVersionKind.Group; group {
+		// Ancillary resources are in the core API group
+		case "":
+			ancillaryResources.Add(resource)
+		// Workload resources are in the apps API group
+		case "apps":
+			workloads.Add(resource)
+		// Jobs and CronJobs in the batch API group are considered a workload resource
+		case "batch":
+			workloads.Add(resource)
+		}
+	}
+
+	return
 }
 
 // SetupWithManager sets up the controller with the Manager.
