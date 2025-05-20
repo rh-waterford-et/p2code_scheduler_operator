@@ -257,7 +257,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Info("Creating default placement for all manifests")
 			bundle := &Bundle{name: "default", resources: resources}
 			r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
-			placementName := "default-placement"
+			placementName := fmt.Sprintf("%s-default", p2CodeSchedulingManifest.Name)
 			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest}); err != nil {
 				log.Error(err, "Failed to create placement")
 				return ctrl.Result{}, err
@@ -280,7 +280,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Info("Creating global placement for all manifests")
 			bundle := &Bundle{name: "global", resources: resources}
 			r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
-			placementName := "global-placement"
+			placementName := fmt.Sprintf("%s-global", p2CodeSchedulingManifest.Name)
 			if err := r.createPlacement(ctx, PlacementOptions{name: placementName, controllerReference: p2CodeSchedulingManifest, clusterPredicates: commonPlacementRules}); err != nil {
 				log.Error(err, "Failed to create placement")
 				return ctrl.Result{}, err
@@ -343,7 +343,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
 			}
 
-			placementName := fmt.Sprintf("%s-bundle-placement", workload.metadata.name)
+			placementName := fmt.Sprintf("%s-%s-bundle", p2CodeSchedulingManifest.Name, workload.metadata.name)
 			additionalPlacementRules := extractPlacementRules(workload.p2codeSchedulingAnnotations)
 			placementRules := slices.Concat(commonPlacementRules, additionalPlacementRules)
 			// TODO calculateWorkloadResourceRequests(workload)
@@ -388,7 +388,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				bundle.clusterName = clusterName
 
 				manifestWork := &workv1.ManifestWork{}
-				manifestWorkName := fmt.Sprintf("%s-bundle-manifestwork", bundle.name)
+				manifestWorkName := fmt.Sprintf("%s-%s-bundle", p2CodeSchedulingManifest.Name, bundle.name)
 				err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: clusterName}, manifestWork)
 				// Define ManifestWork to be created if a ManifestWork doesnt exist for this bundle
 				if err != nil && apierrors.IsNotFound(err) {
