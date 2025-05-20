@@ -46,15 +46,29 @@ spec:
               P2CodeSchedulingManifest
             properties:
               globalAnnotations:
+                description: |-
+                  Optional list of annotations applied to all manifests under Spec.Manifests
+                  Annotations must be of the form p2code.xx.yy=zz
+                  Filter annotations may be used to schedule to a clusters with a given feature
+                  Clusters can be filtered based on:
+                  - physical location (Europe, Greece, Italy)
+                  - Kubernetes distribution installed on the cluster (Kubernetes, OpenShift)
+                  - resource availability (GPUs, presence of edge devices)
                 items:
                   type: string
                 type: array
               manifests:
+                description: Required list of related manifests, much like a Helm
+                  Chart
                 items:
                   type: object
                   x-kubernetes-preserve-unknown-fields: true
                 type: array
               workloadAnnotations:
+                description: |-
+                  Optional list of more granular annotations
+                  If a particular workload requires a specific annotation it should be specified here
+                  WorkloadAnnotations must follow the same format as GlobalAnnotations
                 items:
                   properties:
                     annotations:
@@ -64,7 +78,8 @@ spec:
                         type: string
                       type: array
                     name:
-                      description: Name of Kubernetes workload to add annotations
+                      description: Name of Kubernetes workload to schedule according
+                        to Annotations
                       type: string
                   type: object
                 type: array
@@ -133,8 +148,8 @@ spec:
                   type: object
                 type: array
               decisions:
-                description: List of scheduling decision made for each manifest taking
-                  into account the annotations specified
+                description: List with scheduling decision made for each manifest
+                  taking into account the annotations specified
                 items:
                   properties:
                     clusterSelected:
