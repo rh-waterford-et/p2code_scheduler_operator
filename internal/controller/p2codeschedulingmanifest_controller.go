@@ -56,11 +56,11 @@ const P2CodeSchedulerNamespace = "p2code-scheduler-system"
 
 // Status conditions corresponding to the state of the P2CodeSchedulingManifest
 const (
-	typeSchedulingSucceeded = "SchedulingSucceeded"
-	typeSchedulingFailed    = "SchedulingFailed"
-	typeFinalizing          = "Finalizing"
-	typeMisconfigured       = "Misconfigured"
-	typeUnknown             = "Unknown"
+	schedulingInProgress = "SchedulingInProgress"
+	schedulingSuccessful = "SchedulingSuccessful"
+	schedulingFailed     = "SchedulingFailed"
+	finalizing           = "Finalizing"
+	misconfigured        = "Misconfigured"
 )
 
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
@@ -139,9 +139,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 
-	// If the status is empty set the status as unknown
+	// If the status is empty set the status as scheduling in progress
 	if len(p2CodeSchedulingManifest.Status.Conditions) == 0 {
-		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeUnknown, Status: metav1.ConditionTrue, Reason: "Reconciling", Message: "Reconciliation in process"})
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingInProgress, Status: metav1.ConditionTrue, Reason: schedulingInProgress, Message: "Analysing scheduling requirements"})
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -163,7 +163,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		err := fmt.Errorf("%s", errorTitle)
 		log.Error(err, errorMessage)
 
-		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -194,7 +194,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			message := "Performing finalizing operations before deleting P2CodeSchedulingManifest"
 			log.Info(message)
 
-			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeFinalizing, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: message})
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: finalizing, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: message})
 			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -219,7 +219,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			message = "Removing finalizer to allow instance to be deleted"
 			log.Info(message)
 
-			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeFinalizing, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: message})
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: finalizing, Status: metav1.ConditionTrue, Reason: finalizing, Message: message})
 			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -299,7 +299,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		if err := assignWorkloadAnnotations(workloads, p2CodeSchedulingManifest.Spec.WorkloadAnnotations); err != nil {
 			errorMessage := "Failed to assign all workload annotations to valid workloads"
 			log.Error(err, errorMessage)
-			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: "InvalidWorkloadName", Message: errorMessage + ", " + err.Error()})
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "InvalidWorkloadName", Message: errorMessage + ", " + err.Error()})
 			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -322,7 +322,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					errorMessage := "Namespace omitted"
 					log.Error(err, errorMessage)
 
-					meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: errorMessage + ", " + err.Error()})
+					meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: errorMessage + ", " + err.Error()})
 					p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 					if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 						log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -398,7 +398,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 						errorMessage := "Namespace omitted"
 						log.Error(err, errorMessage)
 
-						meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: errorMessage + ", " + err.Error()})
+						meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: errorMessage + ", " + err.Error()})
 						p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 						if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 							log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -426,7 +426,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				err := fmt.Errorf("%s", errorTitle)
 				log.Error(err, errorMessage)
 
-				meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeSchedulingFailed, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
+				meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
 				p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 				if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 					log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -453,7 +453,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		err := fmt.Errorf("%s", errorTitle)
 		log.Error(err, errorMessage)
 
-		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeMisconfigured, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage})
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -463,17 +463,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 
-	// Create ManifestWorks
-	log.Info("A suitable cluster has been identified for each workload, creating ManifestWorks to schedule the workloads")
-	// TODO Do need to delete manifest works already deployed if one fails to create - use deleteOwnedManifestWorkList func
-	for _, manifestWork := range manifestWorkList {
-		if err = r.Create(ctx, &manifestWork); err != nil {
-			log.Error(err, "Failed to create ManifestWork")
-			return ctrl.Result{}, err
-		}
-	}
-
-	message := "All workloads have been successfully scheduled to suitable clusters"
+	// Update status with scheduling decisions
+	message := "A suitable cluster has been identified for each workload. Creating the corresponding ManifestWork to schedule the workload to the identified cluster."
 	log.Info(message)
 
 	schedulingDecisions := []schedulingv1alpha1.SchedulingDecision{}
@@ -482,13 +473,46 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		schedulingDecisions = append(schedulingDecisions, decision)
 	}
 
+	meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingInProgress, Status: metav1.ConditionTrue, Reason: "ManifestWorkReady", Message: message})
+	p2CodeSchedulingManifest.Status.Decisions = schedulingDecisions
+	if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+		log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+		return ctrl.Result{}, err
+	}
+
+	// Create ManifestWorks
+	// TODO Do need to delete manifest works already deployed if one fails to create - use deleteOwnedManifestWorkList func
+	for _, manifestWork := range manifestWorkList {
+		if err = r.Create(ctx, &manifestWork); err != nil {
+			log.Error(err, "Failed to create ManifestWork")
+			return ctrl.Result{}, err
+		}
+	}
+
 	// Refetch P2CodeSchedulingManifest instance before updating the status
 	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
 		log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
 		return ctrl.Result{}, err
 	}
 
-	meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: typeSchedulingSucceeded, Status: metav1.ConditionTrue, Reason: "SchedulingSuccessful", Message: message})
+	// Validate that the ManifestWork is successfully applied to the selected cluster
+	for _, manifestWork := range manifestWorkList {
+		if err := r.validateManifestWorkApplied(manifestWork); err != nil {
+			log.Error(err, "Failed to apply ManifestWork")
+
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: err.Error()})
+			p2CodeSchedulingManifest.Status.Decisions = schedulingDecisions
+			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+				return ctrl.Result{}, err
+			}
+		}
+	}
+
+	message = "All workloads have been successfully scheduled to a suitable cluster"
+	log.Info(message)
+
+	meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message})
 	p2CodeSchedulingManifest.Status.Decisions = schedulingDecisions
 	if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 		log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -814,6 +838,17 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 	}
 
 	return manifestWork, nil
+}
+
+func (r *P2CodeSchedulingManifestReconciler) validateManifestWorkApplied(manifestWork workv1.ManifestWork) error {
+	for _, manifestStatus := range manifestWork.Status.ResourceStatus.Manifests {
+		for _, condition := range manifestStatus.Conditions {
+			if (condition.Type == "Applied" && condition.Status == metav1.ConditionFalse) || (condition.Type == "Available" && condition.Status == metav1.ConditionFalse) {
+				return fmt.Errorf(condition.Message)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getSelectedCluster(ctx context.Context, placement *clusterv1beta1.Placement) (string, error) {
