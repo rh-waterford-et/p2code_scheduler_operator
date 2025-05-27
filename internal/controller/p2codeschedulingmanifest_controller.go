@@ -382,7 +382,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			infoMessage := fmt.Sprintf("Checking status of %s placement", placement.Name)
 			log.Info(infoMessage)
 
-			if isPlacementSatisfied(placement.Status.Conditions) {
+			if meta.IsStatusConditionTrue(placement.Status.Conditions, "PlacementSatisfied") {
 				clusterName, err := r.getSelectedCluster(ctx, placement)
 				if err != nil {
 					log.Error(err, "Unable to read placement decision for placement")
@@ -765,19 +765,6 @@ func (r *P2CodeSchedulingManifestReconciler) deleteOwnedManifestWorkList(ctx con
 
 func (r *P2CodeSchedulingManifestReconciler) deleteBundles(ownerReference string) {
 	delete(r.Bundles, ownerReference)
-}
-
-func isPlacementSatisfied(conditions []metav1.Condition) bool {
-	satisfied := false
-	for _, condition := range conditions {
-		if condition.Type == "PlacementSatisfied" {
-			if condition.Status == "True" {
-				satisfied = true
-			}
-			break
-		}
-	}
-	return satisfied
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getBundle(bundleName string, ownerReference string) (*Bundle, error) {
