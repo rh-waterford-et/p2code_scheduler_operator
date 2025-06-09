@@ -921,7 +921,7 @@ func (r *P2CodeSchedulingManifestReconciler) extractFailedCondition(placementCon
 
 	if placementCondition.Reason == "NoManagedClusterSetBindings" {
 		condition.Reason = "InaccessibleManagedClusterSet"
-		condition.Message = "The scheuler is not authorized to access any managed cluster sets"
+		condition.Message = "The scheduler is not authorized to access any managed cluster sets"
 	}
 
 	return &condition, nil
