@@ -103,6 +103,10 @@ type ManifestWorkFailedError struct {
 	message string
 }
 
+type ManifestWorkNotReady struct {
+	message string
+}
+
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests/finalizers,verbs=update
@@ -242,35 +246,78 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, nil
 	}
 
-	targetCluster := "cluster1"
+	// TODO extract clusterset - fail if not specified
+	clusterset := "aa1"
 
-	// If a targetCluster is specified all manifests are bundled together and sent to the given cluster
-	// Otherwise the scheduler identifies a suitable cluster for each workload in the P2CodeSchedulingManifest and bundles the workload with its ancillary resources
-	if targetCluster != "" {
-		// TODO extract clusterset
-		clusterset := "aa1"
+	// Validate that the clusterset exists
+	exists, err := r.doesManagedClusterSetExist(clusterset)
+	if err != nil {
+		log.Error(err, "An error occurred while validating the managed cluster set")
+		return ctrl.Result{}, err
+	}
 
-		// Validate that the clusterset exists
-		exists, err := r.doesManagedClusterSetExist(clusterset)
-		if err != nil {
-			log.Error(err, "An error occurred while validating the managed cluster set")
+	if !exists {
+		message := fmt.Sprintf("Cannot find a managed cluster set with the name %s", clusterset)
+		condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
 			return ctrl.Result{}, err
 		}
 
-		if !exists {
-			message := fmt.Sprintf("Cannot find a managed cluster set with the name %s", clusterset)
-			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
-			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
-			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
-			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
-				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
-				return ctrl.Result{}, err
-			}
+		log.Info(message)
+		return ctrl.Result{}, nil
+	}
 
-			log.Info(message)
-			return ctrl.Result{}, nil
+	// Ensure the cluster set is not empty
+	empty, err := r.isClusterSetEmpty(clusterset)
+	if err != nil {
+		log.Error(err, "An error occurred while examining the cluster set")
+		return ctrl.Result{}, err
+	}
+
+	if empty {
+		message := fmt.Sprintf("The managed cluster set selected (%s) is empty", clusterset)
+		condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
 		}
 
+		log.Info(message)
+		return ctrl.Result{}, nil
+	}
+
+	// Ensure the cluster set specified is bound to the controller namespace
+	bound, err := r.isClusterSetBound(clusterset)
+	if err != nil {
+		log.Error(err, "An error occurred while examining the cluster set bindings")
+		return ctrl.Result{}, err
+	}
+
+	if !bound {
+		message := fmt.Sprintf("The scheduler is not authorized to access the %s managed cluster set", clusterset)
+		condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InaccessibleManagedClusterSet", Message: message}
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
+		}
+
+		log.Info(message)
+		return ctrl.Result{}, nil
+	}
+
+	// TODO extract targetcluster
+	targetCluster := ""
+
+	// If a target cluster is specified all manifests are bundled together and sent to the given cluster
+	// Otherwise the scheduler identifies a suitable cluster for each workload in the P2CodeSchedulingManifest and bundles the workload with its ancillary resources
+	if targetCluster != "" {
 		// Validate that the cluster set specified contains the target cluster
 		labelSelector, err := labels.Parse(fmt.Sprintf("cluster.open-cluster-management.io/clusterset=%s", clusterset))
 		if err != nil {
@@ -303,27 +350,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, nil
 		}
 
-		// Ensure the cluster set specified is bound to the controller namespace
-		bound, err := r.isClusterSetBound(clusterset)
-		if err != nil {
-			log.Error(err, "An error occurred while examinig the cluster set bindings")
-			return ctrl.Result{}, err
-		}
-
-		if !bound {
-			message := fmt.Sprintf("The scheduler is not authorized to access the %s managed cluster set", clusterset)
-			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InaccessibleManagedClusterSet", Message: message}
-			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
-			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
-			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
-				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
-				return ctrl.Result{}, err
-			}
-
-			log.Info(message)
-			return ctrl.Result{}, nil
-		}
-
 		// Extract resources from the P2CodeSchedulingManifest instance to populate the bundle
 		resources, err := bulkConvertToResource(p2CodeSchedulingManifest.Spec.Manifests)
 		if err != nil {
@@ -331,7 +357,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, err
 		}
 
-		// Create a bundle if necessary and set the clusterName to the targetCluster specified 
+		// Create a bundle if necessary and set the clusterName to the targetCluster specified
 		_, err = r.getBundle(p2CodeSchedulingManifest.Name, p2CodeSchedulingManifest.Name)
 		if err != nil {
 			bundle := &Bundle{name: p2CodeSchedulingManifest.Name, resources: resources, clusterName: targetCluster}
@@ -351,10 +377,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, err
 		}
 
-		// Check lastest status condition to determine if reconcilation is complete
-		lastestCondition := p2CodeSchedulingManifest.Status.Conditions[len(p2CodeSchedulingManifest.Status.Conditions)-1]
-		if lastestCondition.Type != schedulingInProgress {
-			infoMessage := fmt.Sprintf("Reconciliation complete: %s", lastestCondition.Message)
+		// Check latest status condition to determine if reconciliation is complete
+		latestCondition := p2CodeSchedulingManifest.Status.Conditions[len(p2CodeSchedulingManifest.Status.Conditions)-1]
+		if latestCondition.Type != schedulingInProgress {
+			infoMessage := fmt.Sprintf("Reconciliation complete: %s", latestCondition.Message)
 			log.Info(infoMessage)
 			return ctrl.Result{}, nil
 		}
@@ -403,7 +429,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// It is unlikely that the values are equal since an ancillary manifest can be included in many ManifestWorks
 	if len(p2CodeSchedulingManifest.Spec.Manifests) > placedManifests {
 		errorTitle := "orphaned manifest"
-		errorMessage := "Orphaned manifests found. Ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
+		errorMessage := "Orphaned manifests found: Ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
 
 		err := fmt.Errorf("%s", errorTitle)
 		log.Error(err, errorMessage)
@@ -419,13 +445,19 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	// Update status with scheduling decisions
-	message := "A suitable cluster has been identified for each workload. Creating the corresponding ManifestWork to schedule the workload to the identified cluster."
+	message := "A suitable cluster has been identified for each workload: Creating the corresponding ManifestWork to schedule the workload to the identified cluster"
 	log.Info(message)
 
 	schedulingDecisions := []schedulingv1alpha1.SchedulingDecision{}
 	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
 		decision := schedulingv1alpha1.SchedulingDecision{WorkloadName: bundle.name, ClusterSelected: bundle.clusterName}
 		schedulingDecisions = append(schedulingDecisions, decision)
+	}
+
+	// Refetch P2CodeSchedulingManifest instance before updating the status
+	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+		log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
+		return ctrl.Result{}, err
 	}
 
 	meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingInProgress, Status: metav1.ConditionTrue, Reason: "ManifestWorkReady", Message: message})
@@ -444,12 +476,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
-	// Refetch P2CodeSchedulingManifest instance before updating the status
-	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
-		log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
-		return ctrl.Result{}, err
-	}
-
 	// Fetch list of applied ManifestWorks owned by this P2CodeSchedulingManifest instance
 	manifestWorkList, err := r.getOwnedManifestWorkList(p2CodeSchedulingManifest.Name)
 	if err != nil {
@@ -457,7 +483,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 
-	// Ensure all ManifestWorks owned by this P2CodeSchedulingManifest instance are ready, if not run the reconcile loop again in 10 seconds to complete reconciliation
+	// Ensure all ManifestWorks owned by this P2CodeSchedulingManifest instance are applied, if not run the reconcile loop again in 10 seconds to complete reconciliation
 	if len(r.Bundles[p2CodeSchedulingManifest.Name]) != len(manifestWorkList.Items) {
 		log.Info("Waiting for all ManifestWorks to be applied, requeuing")
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
@@ -467,8 +493,15 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	for _, manifestWork := range manifestWorkList.Items {
 		err := r.validateManifestWorkApplied(manifestWork)
 		var manifestWorkFailedErr *ManifestWorkFailedError
+		var manifestWorkNotReady *ManifestWorkNotReady
 		if errors.As(err, &manifestWorkFailedErr) {
 			log.Error(err, "Failed to apply ManifestWork")
+
+			// Refetch P2CodeSchedulingManifest instance before updating the status
+			if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+				log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
+				return ctrl.Result{}, err
+			}
 
 			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: err.Error()})
 			p2CodeSchedulingManifest.Status.Decisions = schedulingDecisions
@@ -479,6 +512,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			return ctrl.Result{}, nil
 
+		} else if errors.As(err, &manifestWorkNotReady) {
+			message := fmt.Sprintf("Waiting for %s ManifestWork to be ready: %s, requeuing", manifestWork.Name, err.Error())
+			log.Info(message)
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		} else if err != nil {
 			log.Error(err, "Error occurred while validating the state of the ManifestWork applied")
 			return ctrl.Result{}, err
@@ -487,6 +524,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 	message = "All workloads have been successfully scheduled to a suitable cluster"
 	log.Info(message)
+
+	// Refetch P2CodeSchedulingManifest instance before updating the status
+	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+		log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
+		return ctrl.Result{}, err
+	}
 
 	meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message})
 	p2CodeSchedulingManifest.Status.Decisions = schedulingDecisions
@@ -822,6 +865,12 @@ func (r *P2CodeSchedulingManifestReconciler) identifyTargetCluster(ctx context.C
 			return err
 		}
 
+		// Refetch P2CodeSchedulingManifest instance before updating the status
+		if err := r.Get(ctx, types.NamespacedName{Name: p2CodeSchedulingManifest.Name, Namespace: P2CodeSchedulerNamespace}, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to re-fetch P2CodeSchedulingManifest")
+			return err
+		}
+
 		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, *condition)
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
@@ -1019,7 +1068,8 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 
 func (r *P2CodeSchedulingManifestReconciler) validateManifestWorkApplied(manifestWork workv1.ManifestWork) error {
 	if len(manifestWork.Status.ResourceStatus.Manifests) < 1 {
-		return fmt.Errorf("ResourceStatus for %s ManifestWork is empty", manifestWork.Name)
+		errorMessage := fmt.Sprintf("ResourceStatus for %s ManifestWork is empty", manifestWork.Name)
+		return &ManifestWorkNotReady{errorMessage}
 	}
 
 	for _, manifestStatus := range manifestWork.Status.ResourceStatus.Manifests {
@@ -1059,25 +1109,9 @@ func (r *P2CodeSchedulingManifestReconciler) doesManagedClusterSetExist(managedC
 	return false, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) doesManagedClusterExist(managedClusterName string) (bool, error) { 
-	managedClusterList := &clusterv1.ManagedClusterList{}
-	if err := r.List(context.TODO(), managedClusterList); err != nil {
-		return false, err
-	}
-
-	for _, managedCluster := range managedClusterList.Items {
-		if managedCluster.Name == managedClusterName {
-			return true, nil
-		}
-	}
-
-	return false, nil
-}
-
-
 func (r *P2CodeSchedulingManifestReconciler) isClusterSetBound(clustersetName string) (bool, error) {
 	listOptions := client.ListOptions{
-			Namespace: P2CodeSchedulerNamespace,
+		Namespace: P2CodeSchedulerNamespace,
 	}
 
 	clusterSetBindingList := &clusterv1beta2.ManagedClusterSetBindingList{}
@@ -1092,6 +1126,20 @@ func (r *P2CodeSchedulingManifestReconciler) isClusterSetBound(clustersetName st
 	}
 
 	return false, nil
+}
+
+func (r *P2CodeSchedulingManifestReconciler) isClusterSetEmpty(clustersetName string) (bool, error) {
+	labelSelector := labels.SelectorFromSet(labels.Set{
+		clusterv1beta2.ClusterSetLabel: clustersetName,
+	})
+
+	managedClusterList := &clusterv1.ManagedClusterList{}
+	err := r.List(context.TODO(), managedClusterList, &client.ListOptions{LabelSelector: labelSelector})
+	if err != nil {
+		return false, err
+	}
+
+	return len(managedClusterList.Items) < 1, nil
 }
 
 func assignWorkloadAnnotations(workloads ResourceSet, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
@@ -1165,6 +1213,10 @@ func (e NoNamespaceError) Error() string {
 }
 
 func (e ManifestWorkFailedError) Error() string {
+	return e.message
+}
+
+func (e ManifestWorkNotReady) Error() string {
 	return e.message
 }
 
