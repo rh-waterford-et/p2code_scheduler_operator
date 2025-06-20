@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/iancoleman/strcase"
@@ -44,6 +43,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+
+	utils "github.com/PoolPooer/p2code-scheduler/utils"
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
@@ -246,18 +247,47 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, nil
 	}
 
-	// TODO extract clusterset - fail if not specified
-	clusterset := "aa1"
+	// Ensure all annotations specified are supported by the scheduler
+	ok, err := validateAnnotationsSupported(p2CodeSchedulingManifest)
+	if !ok {
+		errorMessage := "Unsupported annotations found"
+		log.Error(err, errorMessage)
 
-	// Validate that the clusterset exists
-	exists, err := r.doesManagedClusterSetExist(clusterset)
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "UnsupportedAnnotation", Message: errorMessage + ", " + err.Error()})
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	// Extract the target cluster set and optional target cluster from the P2CodeSchedulingManifest instance
+	targetClusterSet, targetCluster, err := utils.ExtractTarget(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
+	if err != nil {
+		errorMessage := "Target information missing from the scheduling manifest"
+		log.Error(err, errorMessage)
+
+		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MissingTarget", Message: errorMessage + ", " + err.Error()})
+		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
+		if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
+			return ctrl.Result{}, err
+		}
+
+		return ctrl.Result{}, nil
+	}
+
+	// Validate that the cluster set exists
+	exists, err := r.doesManagedClusterSetExist(targetClusterSet)
 	if err != nil {
 		log.Error(err, "An error occurred while validating the managed cluster set")
 		return ctrl.Result{}, err
 	}
 
 	if !exists {
-		message := fmt.Sprintf("Cannot find a managed cluster set with the name %s", clusterset)
+		message := fmt.Sprintf("Cannot find a managed cluster set with the name %s", targetClusterSet)
 		condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
 		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
@@ -271,14 +301,14 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	// Ensure the cluster set is not empty
-	empty, err := r.isClusterSetEmpty(clusterset)
+	empty, err := r.isClusterSetEmpty(targetClusterSet)
 	if err != nil {
 		log.Error(err, "An error occurred while examining the cluster set")
 		return ctrl.Result{}, err
 	}
 
 	if empty {
-		message := fmt.Sprintf("The managed cluster set selected (%s) is empty", clusterset)
+		message := fmt.Sprintf("The managed cluster set selected (%s) is empty", targetClusterSet)
 		condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
 		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
@@ -292,14 +322,14 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	// Ensure the cluster set specified is bound to the controller namespace
-	bound, err := r.isClusterSetBound(clusterset)
+	bound, err := r.isClusterSetBound(targetClusterSet)
 	if err != nil {
 		log.Error(err, "An error occurred while examining the cluster set bindings")
 		return ctrl.Result{}, err
 	}
 
 	if !bound {
-		message := fmt.Sprintf("The scheduler is not authorized to access the %s managed cluster set", clusterset)
+		message := fmt.Sprintf("The scheduler is not authorized to access the %s managed cluster set", targetClusterSet)
 		condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InaccessibleManagedClusterSet", Message: message}
 		meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
 		p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
@@ -312,14 +342,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, nil
 	}
 
-	// TODO extract targetcluster
-	targetCluster := ""
-
 	// If a target cluster is specified all manifests are bundled together and sent to the given cluster
 	// Otherwise the scheduler identifies a suitable cluster for each workload in the P2CodeSchedulingManifest and bundles the workload with its ancillary resources
 	if targetCluster != "" {
 		// Validate that the cluster set specified contains the target cluster
-		labelSelector, err := labels.Parse(fmt.Sprintf("cluster.open-cluster-management.io/clusterset=%s", clusterset))
+		labelSelector, err := labels.Parse(fmt.Sprintf("cluster.open-cluster-management.io/clusterset=%s", targetClusterSet))
 		if err != nil {
 			log.Error(err, "An occurred error creating the label selector")
 			return ctrl.Result{}, err
@@ -337,7 +364,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 
 		if len(managedClusters.Items) < 1 {
-			message := fmt.Sprintf("Cannot find a managed cluster with the name %s in the %s managed cluster set", targetCluster, clusterset)
+			message := fmt.Sprintf("Cannot find a managed cluster with the name %s in the %s managed cluster set", targetCluster, targetClusterSet)
 			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
 			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
 			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
@@ -728,8 +755,12 @@ func (r *P2CodeSchedulingManifestReconciler) identifyTargetCluster(ctx context.C
 
 	placementBundleMap := make(map[string]*Bundle)
 
-	// TODO Get managedclusterset from annotation
-	managedClusterSetName := "aa1"
+	// Get target managed cluster set
+	managedClusterSetName, _, err := utils.ExtractTarget(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
+	if err != nil {
+		log.Error(err, "Failed to extract target information")
+		return err
+	}
 
 	// Convert p2CodeSchedulingManifest.Spec.Manifests to Resources for easier manipulation
 	resources, err := bulkConvertToResource(p2CodeSchedulingManifest.Spec.Manifests)
@@ -738,10 +769,12 @@ func (r *P2CodeSchedulingManifestReconciler) identifyTargetCluster(ctx context.C
 		return err
 	}
 
-	// If no annotations at all are specified all manifests are scheduled to a random cluster
-	// Create an empty placement and allow the Placement API to decide on a random cluster
+	commonPlacementRules := utils.ExtractPlacementRules(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
+
+	// If no filter annotations are specified all manifests are scheduled to a random cluster within the target managed cluster set
+	// Create an empty placement and allow the Placement API to decide on a random cluster from the target managed cluster set
 	// Later take into account the resource requests of each workload
-	if len(p2CodeSchedulingManifest.Spec.GlobalAnnotations) == 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
+	if len(commonPlacementRules) == 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
 		placementName := fmt.Sprintf("%s-default", p2CodeSchedulingManifest.Name)
 
 		// Check if a default bundle already exists
@@ -759,10 +792,8 @@ func (r *P2CodeSchedulingManifestReconciler) identifyTargetCluster(ctx context.C
 		placementBundleMap[placementName] = bundle
 	}
 
-	commonPlacementRules := extractPlacementRules(p2CodeSchedulingManifest.Spec.GlobalAnnotations)
-
-	// If no workload annotations are specified but global annotations are provided all manifests are scheduled to a cluster matching the global annotations
-	if len(p2CodeSchedulingManifest.Spec.GlobalAnnotations) > 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
+	// If no filter annotations are specified at the workload level but filter annotations are provided at the global level all manifests are scheduled to a cluster matching the global filter annotations
+	if len(commonPlacementRules) > 0 && len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) == 0 {
 		placementName := fmt.Sprintf("%s-global", p2CodeSchedulingManifest.Name)
 
 		// Check if a global bundle already exists
@@ -780,16 +811,16 @@ func (r *P2CodeSchedulingManifestReconciler) identifyTargetCluster(ctx context.C
 		placementBundleMap[placementName] = bundle
 	}
 
-	// Check if any workload annotations specified
-	// Bundle workload and its ancillary resources with the annotation
+	// Check if any workload filter annotations are specified
+	// Bundle workload and its ancillary resources with the filter annotation
 	if len(p2CodeSchedulingManifest.Spec.WorkloadAnnotations) > 0 {
 		workloads, ancillaryResources := resources.Categorise()
 
 		// Ensure workloadAnnotations refer to a valid workload
 		if err := assignWorkloadAnnotations(workloads, p2CodeSchedulingManifest.Spec.WorkloadAnnotations); err != nil {
-			errorMessage := "Failed to assign all workload annotations to valid workloads"
+			errorMessage := "Invalid workload annotation provided"
 			log.Error(err, errorMessage)
-			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "InvalidWorkloadName", Message: errorMessage + ", " + err.Error()})
+			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "InvalidWorkloadAnnotation", Message: errorMessage + ", " + err.Error()})
 			p2CodeSchedulingManifest.Status.Decisions = []schedulingv1alpha1.SchedulingDecision{}
 			if err := r.Status().Update(ctx, p2CodeSchedulingManifest); err != nil {
 				log.Error(err, "Failed to update P2CodeSchedulingManifest status")
@@ -830,7 +861,7 @@ func (r *P2CodeSchedulingManifestReconciler) identifyTargetCluster(ctx context.C
 				r.Bundles[p2CodeSchedulingManifest.Name] = append(r.Bundles[p2CodeSchedulingManifest.Name], bundle)
 			}
 
-			additionalPlacementRules := extractPlacementRules(workload.p2codeSchedulingAnnotations)
+			additionalPlacementRules := utils.ExtractPlacementRules(workload.p2codeSchedulingAnnotations)
 			placementRules := slices.Concat(commonPlacementRules, additionalPlacementRules)
 			// TODO calculateWorkloadResourceRequests(workload)
 
@@ -1142,33 +1173,40 @@ func (r *P2CodeSchedulingManifestReconciler) isClusterSetEmpty(clustersetName st
 	return len(managedClusterList.Items) < 1, nil
 }
 
-func assignWorkloadAnnotations(workloads ResourceSet, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
-	for index, workloadAnnotation := range workloadAnnotations {
-		if workload, err := workloads.FindWorkload(workloadAnnotation.Name); err != nil {
-			return fmt.Errorf("invalid workload name for workload annotation %d: %w", index+1, err)
-		} else {
-			workload.p2codeSchedulingAnnotations = workloadAnnotation.Annotations
+func validateAnnotationsSupported(p2codeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) (bool, error) {
+	for _, annotation := range p2codeSchedulingManifest.Spec.GlobalAnnotations {
+		if !utils.IsAnnotationSupported(annotation) {
+			return false, fmt.Errorf("%s is an unsupported annotation", annotation)
 		}
 	}
-	return nil
+
+	for _, workloadAnnotation := range p2codeSchedulingManifest.Spec.WorkloadAnnotations {
+		for _, annotation := range workloadAnnotation.Annotations {
+			if !utils.IsAnnotationSupported(annotation) {
+				return false, fmt.Errorf("%s is an unsupported annotation", annotation)
+			}
+		}
+	}
+
+	return true, nil
 }
 
-// Assuming annotation being parsed is of the form p2code.filter.xx=yy
-// Parse so that p2code.filter.xx is the key and yy is the value
-func extractPlacementRules(annotations []string) []metav1.LabelSelectorRequirement {
-	placementRules := []metav1.LabelSelectorRequirement{}
-	for _, annotation := range annotations {
-		splitAnnotation := strings.Split(annotation, "=")
-		newPlacementRule := metav1.LabelSelectorRequirement{
-			Key:      splitAnnotation[0],
-			Operator: "In",
-			Values: []string{
-				splitAnnotation[1],
-			},
+func assignWorkloadAnnotations(workloads ResourceSet, workloadAnnotations []schedulingv1alpha1.WorkloadAnnotation) error {
+	for index, workloadAnnotation := range workloadAnnotations {
+		// Ensure that all the workload annotations are filter annotations
+		// Use the extractPlacementRules function to get a list of the filter annotations
+		if len(utils.ExtractPlacementRules(workloadAnnotation.Annotations)) != len(workloadAnnotation.Annotations) {
+			return fmt.Errorf("invalid workload annotations provided, all workload annotations must be of the form p2code.filter.feature=value")
 		}
-		placementRules = append(placementRules, newPlacementRule)
+
+		workload, err := workloads.FindWorkload(workloadAnnotation.Name)
+		if err != nil {
+			return fmt.Errorf("invalid workload name for workload annotation %d: %w", index+1, err)
+		}
+
+		workload.p2codeSchedulingAnnotations = workloadAnnotation.Annotations
 	}
-	return placementRules
+	return nil
 }
 
 func extractPodSpec(workload Resource) (*corev1.PodSpec, error) {
