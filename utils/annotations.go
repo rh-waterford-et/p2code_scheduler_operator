@@ -2,7 +2,6 @@ package utils
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -15,12 +14,9 @@ const (
 	targetClusterAnnotationKey    = "p2code.target.cluster"
 )
 
-func getSupportedAnnotations() []string {
-	return []string{filterPrefix, targetClusterSetAnnotationKey, targetClusterAnnotationKey}
-}
-
 func IsAnnotationSupported(s string) bool {
-	return slices.Contains(getSupportedAnnotations(), s)
+	key := strings.Split(s, "=")[0]
+	return key == targetClusterAnnotationKey || key == targetClusterSetAnnotationKey || strings.HasPrefix(key, filterPrefix)
 }
 
 // Placement annotations are expected to follow the format p2code.filter.x=y
@@ -58,7 +54,7 @@ func ExtractTarget(annotations []string) (targetClusterSet string, targetCluster
 	}
 
 	if targetClusterSet == "" {
-		err = fmt.Errorf("No target managed cluster set provided")
+		err = fmt.Errorf("no target managed cluster set provided")
 	}
 
 	return
