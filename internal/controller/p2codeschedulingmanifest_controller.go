@@ -154,6 +154,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Error(err, "Failed to update P2CodeSchedulingManifest status")
 			return ctrl.Result{}, err
 		}
+
+		// Refetch P2CodeSchedulingManifest instance to get the latest state of the resource
+		if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
+			log.Error(err, "Failed to refetch P2CodeSchedulingManifest")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// Validate that the P2CodeSchedulingManifest instance is in the correct namespace
@@ -346,24 +352,13 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Otherwise the scheduler identifies a suitable cluster for each workload in the P2CodeSchedulingManifest and bundles the workload with its ancillary resources
 	if targetCluster != "" {
 		// Validate that the cluster set specified contains the target cluster
-		labelSelector, err := labels.Parse(fmt.Sprintf("cluster.open-cluster-management.io/clusterset=%s", targetClusterSet))
-		if err != nil {
-			log.Error(err, "An occurred error creating the label selector")
-			return ctrl.Result{}, err
-		}
-
-		listOptions := client.ListOptions{
-			LabelSelector: labelSelector,
-		}
-
-		managedClusters := &clusterv1.ManagedClusterList{}
-		err = r.List(ctx, managedClusters, &listOptions)
+		member, err := r.isManagedClusterInSet(targetClusterSet, targetCluster)
 		if err != nil {
 			log.Error(err, "An error occurred while validating the target cluster's cluster set membership")
 			return ctrl.Result{}, err
 		}
 
-		if len(managedClusters.Items) < 1 {
+		if !member {
 			message := fmt.Sprintf("Cannot find a managed cluster with the name %s in the %s managed cluster set", targetCluster, targetClusterSet)
 			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "InvalidTarget", Message: message}
 			meta.SetStatusCondition(&p2CodeSchedulingManifest.Status.Conditions, condition)
@@ -1133,6 +1128,32 @@ func (r *P2CodeSchedulingManifestReconciler) doesManagedClusterSetExist(managedC
 
 	for _, managedClusterSet := range managedClusterSetList.Items {
 		if managedClusterSet.Name == managedClusterSetName {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (r *P2CodeSchedulingManifestReconciler) isManagedClusterInSet(managedClusterSetName string, managedClusterName string) (bool, error) {
+	label := fmt.Sprintf("cluster.open-cluster-management.io/clusterset=%s", managedClusterSetName)
+	labelSelector, err := labels.Parse(label)
+	if err != nil {
+		return false, fmt.Errorf("an occurred error creating the label selector")
+	}
+
+	listOptions := client.ListOptions{
+		LabelSelector: labelSelector,
+	}
+
+	managedClusterList := &clusterv1.ManagedClusterList{}
+	err = r.List(context.TODO(), managedClusterList, &listOptions)
+	if err != nil {
+		return false, fmt.Errorf("failed to list all managed clusters with the label %s", label)
+	}
+
+	for _, managedCluster := range managedClusterList.Items {
+		if managedCluster.Name == managedClusterName {
 			return true, nil
 		}
 	}
