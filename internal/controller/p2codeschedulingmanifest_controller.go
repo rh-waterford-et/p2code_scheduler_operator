@@ -352,9 +352,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			// Ensure the placement has a placement decision
 			if len(placement.Status.Conditions) < 1 {
-				err := fmt.Errorf("placement decision not ready yet for %s placement", placement.Name)
-				log.Error(err, "Placement decision not ready, requeuing")
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, err
+				message := fmt.Sprintf("Placement decision not ready yet for %s placement, requeuing", placement.Name)
+				log.Info(message)
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
 
 			// Check if the placement was satisfied and a suitable cluster found for the bundle
