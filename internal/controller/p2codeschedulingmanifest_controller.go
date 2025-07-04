@@ -445,23 +445,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, nil
 	}
 
-	// Update status with scheduling decisions
-	message := "Pushing ManifestWork to schedule the workload to the identified cluster"
-	log.Info(message)
-
-	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
-
-	// Refetch P2CodeSchedulingManifest instance before updating the status
-	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
-		log.Error(err, fetchFailure)
-		return ctrl.Result{}, err
-	}
-
-	condition := metav1.Condition{Type: schedulingInProgress, Status: metav1.ConditionTrue, Reason: "ManifestWorkReady", Message: message}
-	if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
-		log.Error(err, updateFailure)
-		return ctrl.Result{}, err
-	}
+	log.Info("Ready to push ManifestWork(s) to schedule the workload to the identified cluster")
 
 	// Create ManifestWorks
 	// TODO Do need to delete manifest works already deployed if one fails to create - use deleteOwnedManifestWorkList func
@@ -494,6 +478,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Error(err, "Failed to apply ManifestWork")
 
 			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: err.Error()}
+			schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, err
@@ -511,16 +496,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
-	message = "All workloads have been successfully scheduled to a suitable cluster"
+	message := "All workloads have been successfully scheduled to a suitable cluster"
 	log.Info(message)
 
-	// Refetch P2CodeSchedulingManifest instance before updating the status
-	if err := r.Get(ctx, req.NamespacedName, p2CodeSchedulingManifest); err != nil {
-		log.Error(err, fetchFailure)
-		return ctrl.Result{}, err
-	}
-
-	condition = metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message}
+	condition := metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message}
+	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 	if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 		log.Error(err, updateFailure)
 		return ctrl.Result{}, err
