@@ -533,11 +533,20 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		return ResourceSet{}, []string{}, err
 	}
 
-	// TODO suport later imagePullSecrets
-	// Need to consider nodeSelector, tolerations ??
+	// Open question is there a need to consider nodeSelector, tolerations
+
+	if len(podSpec.ImagePullSecrets) > 0 {
+		for _, pullSecret := range podSpec.ImagePullSecrets {
+			secret, err := ancillaryResources.Find(pullSecret.Name, "Secret")
+			if err != nil {
+				return ResourceSet{}, []string{}, err
+			}
+			fmt.Println(secret.metadata.name)
+		}
+	}
 
 	// Later could support other types and check for aws and azure types
-	// look at storage classes
+	// Could also include storage classes
 	if len(podSpec.Volumes) > 0 {
 		for _, volume := range podSpec.Volumes {
 			if volume.PersistentVolumeClaim != nil {
