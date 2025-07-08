@@ -38,7 +38,7 @@ import (
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	"github.com/rh-waterford-et/p2code-scheduler-operator/internal/controller"
-	"github.com/rh-waterford-et/p2code-scheduler/utils"
+	"github.com/rh-waterford-et/p2code-scheduler-operator/utils"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	clusterv1beta2 "open-cluster-management.io/api/cluster/v1beta2"
