@@ -16,6 +16,7 @@ require (
 require (
 	cel.dev/expr v0.19.1 // indirect
 	github.com/google/btree v1.1.3 // indirect
+	github.com/rh-waterford-et/ac3_networkoperator v0.0.0-20250703111701-54dd6eaefb7e // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 )
 

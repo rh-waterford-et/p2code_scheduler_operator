@@ -37,6 +37,8 @@ import (
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
 	"github.com/PoolPooer/p2code-scheduler/internal/controller"
+	"github.com/PoolPooer/p2code-scheduler/utils"
+	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	clusterv1beta2 "open-cluster-management.io/api/cluster/v1beta2"
@@ -56,6 +58,7 @@ func init() {
 	utilruntime.Must(clusterv1beta2.AddToScheme(scheme))
 	utilruntime.Must(workv1.AddToScheme(scheme))
 	utilruntime.Must(schedulingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(networkoperatorv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -170,6 +173,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	isInstalled, err := utils.IsCRDInstalled(mgr.GetRESTMapper(), networkoperatorv1alpha1.GroupVersion.WithKind("MultiClusterNetwork"))
+	if err != nil || !isInstalled {
+		setupLog.Info("WARNING: MultiClusterNetwork API is not installed, scheduler may not perform as expected")
+	}
+
+	// All set up operations and checks must be performed before starting the manager since it is a blocking function
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")

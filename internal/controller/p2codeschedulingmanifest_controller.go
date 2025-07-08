@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/iancoleman/strcase"
@@ -42,6 +43,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
+	"github.com/PoolPooer/p2code-scheduler/utils"
+	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
@@ -58,6 +61,7 @@ const configurationIssue = "There is a configuration issue in the P2CodeScheduli
 const (
 	schedulingInProgress = "SchedulingInProgress"
 	schedulingSuccessful = "SchedulingSuccessful"
+	unreliablyScheduled  = "ScheduledWithUnreliableConnectivity"
 	schedulingFailed     = "SchedulingFailed"
 	finalizing           = "Finalizing"
 	misconfigured        = "Misconfigured"
@@ -80,6 +84,7 @@ type P2CodeSchedulingManifestReconciler struct {
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclustersetbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ac3.redhat.com,resources=ac3networks,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -496,11 +501,77 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
-	message := "All workloads have been successfully scheduled to a suitable cluster"
+	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
+	message := "All workloads have been successfully scheduled to a suitable cluster, checking if network links need to be created"
 	log.Info(message)
 
+	connections, err := r.getNetworkConnections(p2CodeSchedulingManifest)
+	if err != nil {
+		log.Error(err, "Error occurred while retrieving network connections")
+		return ctrl.Result{}, err
+	}
+
+	if len(connections) != 0 {
+		// Ensure the MultiClusterNetwork resource is installed
+		restMapper, err := utils.CreateRESTMapper()
+		if err != nil {
+			log.Error(err, "Cannot create RESTMapper")
+			return ctrl.Result{}, err
+		}
+
+		isInstalled, err := utils.IsCRDInstalled(restMapper, networkoperatorv1alpha1.GroupVersion.WithKind("MultiClusterNetwork"))
+		if err != nil {
+			log.Error(err, "An error occurred while validating that the MultiClusterNetwork resource is installed in the cluster")
+			return ctrl.Result{}, err
+		}
+
+		// Update the state informing the user that all workloads have been scheduled according to their requests
+		// Emphasise the fact that network connectivity between components cannot be guaranteed as it is not possible to create the necessary MultiClusterLinks without the resource being present
+		if !isInstalled {
+			message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed as it is not possible to create the necessary MultiClusterLinks without the resource being present"
+			log.Info(message)
+
+			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: "MultiClusterNetworkResourceMissing", Message: message}
+			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+				log.Error(err, updateFailure)
+				return ctrl.Result{}, err
+			}
+
+			// End reconciliation
+			return ctrl.Result{}, nil
+		}
+
+		// Create MultiClusterLinks and update the MultiClusterNetwork resource
+		err = r.registerNetworkLinks(connections)
+		if err != nil {
+			log.Error(err, "Error occurred while registering network links")
+			return ctrl.Result{}, err
+		}
+
+		// Check if there is a NetworkConnection for each externalConnection listed for all bundles
+		connectionCount := 0
+		for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+			connectionCount = connectionCount + len(bundle.externalConnections)
+		}
+
+		if len(connections) != connectionCount {
+			message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
+			log.Info(message)
+
+			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
+			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+				log.Error(err, updateFailure)
+				return ctrl.Result{}, err
+			}
+
+			// End reconciliation
+			return ctrl.Result{}, nil
+		}
+
+		log.Info("Network links successfully registered")
+	}
+
 	condition := metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message}
-	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 	if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 		log.Error(err, updateFailure)
 		return ctrl.Result{}, err
@@ -641,6 +712,11 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 
 						resources.Add(secretResource)
 					}
+				} else if envVar.Value != "" && isServiceNamePortReference(envVar.Value) {
+					// If the workload contains an environment variable that references a service append it to the externalConnections list
+					// This list is later used to create MultiClusterNetwork resources to expose services across clusters if required
+					serviceName := strings.Split(envVar.Value, ":")[0]
+					externalConnections = append(externalConnections, serviceName)
 				}
 			}
 		}
