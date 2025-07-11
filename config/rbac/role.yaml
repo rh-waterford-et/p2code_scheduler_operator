@@ -7,7 +7,7 @@ rules:
 - apiGroups:
   - ac3.redhat.com
   resources:
-  - ac3networks
+  - multiclusternetworks
   verbs:
   - create
   - delete
