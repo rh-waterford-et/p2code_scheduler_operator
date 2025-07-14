@@ -16,15 +16,20 @@ import (
 const MultiClusterNetworkNamespace = "ac3no-system"
 const MultiClusterNetworkResourceName = "application-connectivity-definitions"
 
+type ServicePortPair struct {
+	serviceName string
+	port        int
+}
+
 type Location struct {
 	cluster   string
 	namespace string
 }
 
 type NetworkConnection struct {
-	connectionName string
-	source         Location
-	target         Location
+	service ServicePortPair
+	source  Location
+	target  Location
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getNetworkConnections(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]NetworkConnection, error) {
@@ -58,8 +63,9 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(networkConnect
 			link := getLink(links, networkConnection)
 			if link != nil {
 				// Add connectionName to the link's list of services if necessary
-				if !slices.Contains(link.Services, networkConnection.connectionName) {
-					link.Services = append(link.Services, networkConnection.connectionName)
+				// TODO confirm if there should be a check to see if the ports match - should there be a list of port service mappings in the MultiClusterLink
+				if !slices.Contains(link.Services, networkConnection.service.serviceName) {
+					link.Services = append(link.Services, networkConnection.service.serviceName)
 				}
 			} else {
 				// Create new MultiClusterLink
@@ -68,7 +74,8 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(networkConnect
 					SourceNamespace: networkConnection.source.namespace,
 					TargetCluster:   networkConnection.target.cluster,
 					TargetNamespace: networkConnection.target.namespace,
-					Services:        []string{networkConnection.connectionName},
+					Services:        []string{networkConnection.service.serviceName},
+					Port:            networkConnection.service.port,
 				}
 
 				links = append(links, link)
@@ -117,7 +124,10 @@ func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection,
 		return nil, fmt.Errorf("bundle contains more than one workload, unable to identify the details of the network link")
 	}
 
-	sourceLocation := Location{cluster: b.clusterName, namespace: workloads[0].metadata.namespace}
+	// Extract the target details from Bundle b
+	// b is the target since the service it depends on is elsewhere
+	// Below the source of this dependent service is identified
+	targetLocation := Location{cluster: b.clusterName, namespace: workloads[0].metadata.namespace}
 
 	networkConnections := []NetworkConnection{}
 	for _, connection := range b.externalConnections {
@@ -127,8 +137,8 @@ func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection,
 				continue
 			}
 
-			if service := bundle.getExternalService(connection); service != nil {
-				externalConn := NetworkConnection{connectionName: connection, source: sourceLocation, target: Location{cluster: bundle.clusterName, namespace: service.metadata.namespace}}
+			if service := bundle.getExternalService(connection.serviceName); service != nil {
+				externalConn := NetworkConnection{service: connection, source: Location{cluster: bundle.clusterName, namespace: service.metadata.namespace}, target: targetLocation}
 				networkConnections = append(networkConnections, externalConn)
 			}
 		}

@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -511,6 +512,26 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, err
 	}
 
+	// Check if there is a NetworkConnection for each externalConnection listed for all bundles
+	connectionCount := 0
+	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+		connectionCount = connectionCount + len(bundle.externalConnections)
+	}
+
+	if len(connections) != connectionCount {
+		message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
+		log.Info(message)
+
+		condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
+		if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+			log.Error(err, updateFailure)
+			return ctrl.Result{}, err
+		}
+
+		// End reconciliation
+		return ctrl.Result{}, nil
+	}
+
 	if len(connections) != 0 {
 		// Ensure the MultiClusterNetwork resource is installed
 		restMapper, err := utils.CreateRESTMapper()
@@ -548,26 +569,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, err
 		}
 
-		// Check if there is a NetworkConnection for each externalConnection listed for all bundles
-		connectionCount := 0
-		for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
-			connectionCount = connectionCount + len(bundle.externalConnections)
-		}
-
-		if len(connections) != connectionCount {
-			message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
-			log.Info(message)
-
-			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
-			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
-				log.Error(err, updateFailure)
-				return ctrl.Result{}, err
-			}
-
-			// End reconciliation
-			return ctrl.Result{}, nil
-		}
-
 		log.Info("Network links successfully registered")
 	}
 
@@ -582,19 +583,19 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 }
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
-func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []string, error) {
+func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
-	externalConnections := []string{}
+	externalConnections := []ServicePortPair{}
 
 	if workload.metadata.namespace == "" {
 		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.metadata.name)
-		return ResourceSet{}, []string{}, &MisconfiguredManifestError{errorMessage}
+		return ResourceSet{}, []ServicePortPair{}, &MisconfiguredManifestError{errorMessage}
 	}
 
 	if workload.metadata.namespace != "default" {
 		namespaceResource, err := ancillaryResources.Find(workload.metadata.namespace, "Namespace")
 		if err != nil {
-			return ResourceSet{}, []string{}, err
+			return ResourceSet{}, []ServicePortPair{}, err
 		}
 
 		resources.Add(namespaceResource)
@@ -602,7 +603,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 
 	podSpec, err := extractPodSpec(*workload)
 	if err != nil {
-		return ResourceSet{}, []string{}, err
+		return ResourceSet{}, []ServicePortPair{}, err
 	}
 
 	// Open question is there a need to consider nodeSelector, tolerations
@@ -611,7 +612,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		for _, pullSecret := range podSpec.ImagePullSecrets {
 			secret, err := ancillaryResources.Find(pullSecret.Name, "Secret")
 			if err != nil {
-				return ResourceSet{}, []string{}, err
+				return ResourceSet{}, []ServicePortPair{}, err
 			}
 			fmt.Println(secret.metadata.name)
 		}
@@ -624,7 +625,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 			if volume.PersistentVolumeClaim != nil {
 				pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
 				if err != nil {
-					return ResourceSet{}, []string{}, err
+					return ResourceSet{}, []ServicePortPair{}, err
 				}
 
 				resources.Add(pvcResource)
@@ -639,7 +640,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 			if volume.ConfigMap != nil {
 				cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
 				if err != nil {
-					return ResourceSet{}, []string{}, err
+					return ResourceSet{}, []ServicePortPair{}, err
 				}
 
 				resources.Add(cmResource)
@@ -648,7 +649,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 			if volume.Secret != nil {
 				secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
 				if err != nil {
-					return ResourceSet{}, []string{}, err
+					return ResourceSet{}, []ServicePortPair{}, err
 				}
 
 				resources.Add(secretResource)
@@ -659,7 +660,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 	if podSpec.ServiceAccountName != "" {
 		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
 		if err != nil {
-			return ResourceSet{}, []string{}, err
+			return ResourceSet{}, []ServicePortPair{}, err
 		}
 
 		resources.Add(saResource)
@@ -676,7 +677,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 				if envSource.ConfigMapRef != nil {
 					cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
 					if err != nil {
-						return ResourceSet{}, []string{}, err
+						return ResourceSet{}, []ServicePortPair{}, err
 					}
 
 					resources.Add(cmResource)
@@ -685,7 +686,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 				if envSource.SecretRef != nil {
 					secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
 					if err != nil {
-						return ResourceSet{}, []string{}, err
+						return ResourceSet{}, []ServicePortPair{}, err
 					}
 
 					resources.Add(secretResource)
@@ -699,7 +700,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 					if envVar.ValueFrom.ConfigMapKeyRef != nil {
 						cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
 						if err != nil {
-							return ResourceSet{}, []string{}, err
+							return ResourceSet{}, []ServicePortPair{}, err
 						}
 
 						resources.Add(cmResource)
@@ -708,7 +709,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 					if envVar.ValueFrom.SecretKeyRef != nil {
 						secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
 						if err != nil {
-							return ResourceSet{}, []string{}, err
+							return ResourceSet{}, []ServicePortPair{}, err
 						}
 
 						resources.Add(secretResource)
@@ -717,7 +718,13 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 					// If the workload contains an environment variable that references a service append it to the externalConnections list
 					// This list is later used to create MultiClusterNetwork resources to expose services across clusters if required
 					serviceName := strings.Split(envVar.Value, ":")[0]
-					externalConnections = append(externalConnections, serviceName)
+					port, err := strconv.Atoi(strings.Split(envVar.Value, ":")[1])
+
+					if err != nil {
+						return ResourceSet{}, []ServicePortPair{}, err
+					}
+
+					externalConnections = append(externalConnections, ServicePortPair{serviceName: serviceName, port: port})
 				}
 			}
 		}
@@ -732,12 +739,12 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return ResourceSet{}, []string{}, err
+			return ResourceSet{}, []ServicePortPair{}, err
 		}
 
 		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
 		if err != nil {
-			return ResourceSet{}, []string{}, err
+			return ResourceSet{}, []ServicePortPair{}, err
 		}
 
 		resources.Add(svcResource)
@@ -747,7 +754,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		for _, service := range services {
 			svc := &corev1.Service{}
 			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, []string{}, err
+				return ResourceSet{}, []ServicePortPair{}, err
 			}
 
 			for k, v := range svc.Spec.Selector {
