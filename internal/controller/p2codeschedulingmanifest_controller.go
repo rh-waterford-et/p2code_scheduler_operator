@@ -539,7 +539,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Info(message)
 
 			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: "MultiClusterNetworkResourceMissing", Message: message}
-			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, err
 			}
@@ -567,7 +567,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Info(message)
 
 			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
-			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, err
 			}
@@ -591,8 +591,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 }
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
+// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
 func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
-	// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
 	resources := ResourceSet{}
 	externalConnections := []ServicePortPair{}
 
