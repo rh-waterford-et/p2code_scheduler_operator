@@ -383,6 +383,11 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					log.Error(err, updateFailure)
 					return ctrl.Result{}, err
 				}
+
+				// End reconciliation if the placement cannot be satisfied
+				message := fmt.Sprintf("Scheduling failed as placement cannot be satisfied: %s", condition.Message)
+				log.Info(message)
+				return ctrl.Result{}, nil
 			}
 		}
 
@@ -503,36 +508,14 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
-	message := "All workloads have been successfully scheduled to a suitable cluster, checking if network links need to be created"
-	log.Info(message)
+	log.Info("All workloads have been successfully scheduled to a suitable cluster, checking if network links need to be created")
 
-	connections, err := r.getNetworkConnections(p2CodeSchedulingManifest)
-	if err != nil {
-		log.Error(err, "Error occurred while retrieving network connections")
-		return ctrl.Result{}, err
-	}
-
-	// Check if there is a NetworkConnection for each externalConnection listed for all bundles
 	connectionCount := 0
 	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
 		connectionCount = connectionCount + len(bundle.externalConnections)
 	}
 
-	if len(connections) != connectionCount {
-		message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
-		log.Info(message)
-
-		condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
-		if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
-			log.Error(err, updateFailure)
-			return ctrl.Result{}, err
-		}
-
-		// End reconciliation
-		return ctrl.Result{}, nil
-	}
-
-	if len(connections) != 0 {
+	if connectionCount != 0 {
 		// Ensure the MultiClusterNetwork resource is installed
 		restMapper, err := utils.CreateRESTMapper()
 		if err != nil {
@@ -562,6 +545,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, nil
 		}
 
+		connections, err := r.getNetworkConnections(p2CodeSchedulingManifest)
+		if err != nil {
+			log.Error(err, "Error occurred while retrieving network connections")
+			return ctrl.Result{}, err
+		}
+
 		// Create MultiClusterLinks and update the MultiClusterNetwork resource
 		err = r.registerNetworkLinks(connections)
 		if err != nil {
@@ -569,9 +558,25 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, err
 		}
 
-		log.Info("Network links successfully registered")
+		// Check if there is a link registered for every externalConnection
+		if len(connections) != connectionCount {
+			message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
+			log.Info(message)
+
+			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
+			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+				log.Error(err, updateFailure)
+				return ctrl.Result{}, err
+			}
+
+			// End reconciliation
+			return ctrl.Result{}, nil
+		} else {
+			log.Info("Network links successfully registered")
+		}
 	}
 
+	message := "All workloads have been successfully scheduled to a suitable cluster"
 	condition := metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message}
 	if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 		log.Error(err, updateFailure)
