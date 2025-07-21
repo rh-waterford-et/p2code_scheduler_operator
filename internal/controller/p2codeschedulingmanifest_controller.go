@@ -884,6 +884,12 @@ func (r *P2CodeSchedulingManifestReconciler) getSchedulingDecisions(p2CodeSchedu
 
 func extractPodSpec(workload Resource) (*corev1.PodSpec, error) {
 	switch kind := workload.metadata.groupVersionKind.Kind; kind {
+	case "Pod":
+		pod := &corev1.Pod{}
+		if err := json.Unmarshal(workload.manifest.Raw, pod); err != nil {
+			return nil, err
+		}
+		return &pod.Spec, nil
 	case "Deployment":
 		deployment := &appsv1.Deployment{}
 		if err := json.Unmarshal(workload.manifest.Raw, deployment); err != nil {
