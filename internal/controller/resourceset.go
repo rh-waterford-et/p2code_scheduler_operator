@@ -23,6 +23,28 @@ type Resource struct {
 
 type ResourceSet []*Resource
 
+func (r Resource) IsWorkload() bool {
+	group := r.metadata.groupVersionKind.Group
+	kind := r.metadata.groupVersionKind.Kind
+
+	// Workload resources are in the apps API group apart
+	if group == "apps" {
+		return true
+	}
+
+	// A Pod is a workload resource in the core API group
+	if group == "" && kind == "Pod" {
+		return true
+	}
+
+	// Jobs and CronJobs in the batch API group are considered a workload resource
+	if group == "batch" {
+		return true
+	}
+
+	return false
+}
+
 func (r1 Resource) Equals(r2 Resource) bool {
 	return r1.metadata.name == r2.metadata.name && r1.metadata.namespace == r2.metadata.namespace && r1.metadata.groupVersionKind.Kind == r2.metadata.groupVersionKind.Kind
 }
@@ -49,7 +71,7 @@ func (resourceSet *ResourceSet) Find(name string, kind string) (*Resource, error
 
 func (resourceSet *ResourceSet) FindWorkload(name string) (*Resource, error) {
 	for _, resource := range *resourceSet {
-		if resource.metadata.name == name && (resource.metadata.groupVersionKind.Group == "apps" || resource.metadata.groupVersionKind.Group == "batch") {
+		if resource.metadata.name == name && resource.IsWorkload() {
 			return resource, nil
 		}
 	}
@@ -70,16 +92,10 @@ func (resourceSet *ResourceSet) FilterByKind(kind string) ResourceSet {
 
 func (resourceSet *ResourceSet) Categorise() (workloads ResourceSet, ancillaryResources ResourceSet) {
 	for _, resource := range *resourceSet {
-		switch group := resource.metadata.groupVersionKind.Group; group {
-		// Ancillary resources are in the core API group
-		case "":
-			ancillaryResources.Add(resource)
-		// Workload resources are in the apps API group
-		case "apps":
-			workloads.Add(resource)
-		// Jobs and CronJobs in the batch API group are considered a workload resource
-		case "batch":
-			workloads.Add(resource)
+		if resource.IsWorkload() {
+			workloads = append(workloads, resource)
+		} else {
+			ancillaryResources = append(ancillaryResources, resource)
 		}
 	}
 
