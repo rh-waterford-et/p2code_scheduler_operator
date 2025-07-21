@@ -21,10 +21,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
+	"github.com/PoolPooer/p2code-scheduler/utils"
 	"github.com/iancoleman/strcase"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -64,6 +63,7 @@ const (
 	schedulingSuccessful = "SchedulingSuccessful"
 	unreliablyScheduled  = "ScheduledWithUnreliableConnectivity"
 	schedulingFailed     = "SchedulingFailed"
+	tentativelyScheduled = "TentativelyScheduled"
 	finalizing           = "Finalizing"
 	misconfigured        = "Misconfigured"
 )
@@ -332,9 +332,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	} else {
 		err := r.buildBundle(p2CodeSchedulingManifest)
 		var misconfiguredManifestErr *MisconfiguredManifestError
-		if errors.As(err, &misconfiguredManifestErr) {
+		var resourceNotFoundErr *ResourceNotFound
+		if errors.As(err, &misconfiguredManifestErr) || errors.As(err, &resourceNotFoundErr) {
 			log.Error(err, configurationIssue)
-			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: err.Error()}
+			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.Capitalise(err.Error())}
 			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, err
@@ -417,7 +418,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			if errors.As(err, &misconfiguredManifestErr) {
 				log.Error(err, configurationIssue)
 
-				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: err.Error()}
+				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.Capitalise(err.Error())}
 				if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 					log.Error(err, updateFailure)
 					return ctrl.Result{}, err
@@ -433,27 +434,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			manifestWorks = append(manifestWorks, newManifestWork)
 		}
-	}
-
-	// Ensure there are no orphaned manifests
-	// Orphaned manifests can arise if there are ancillary services that are not referenced by a workload resource and are therefore not added to a bundle
-	// If there are more manifests in the CR than the count of manifests across all ManifestWorks this indicates that some manifests are unaccounted for
-	// It is unlikely that the values are equal since an ancillary manifest can be included in many ManifestWorks
-	if len(p2CodeSchedulingManifest.Spec.Manifests) > placedManifests {
-		errorTitle := "orphaned manifest"
-		errorMessage := "Orphaned manifests found: Ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
-
-		err := fmt.Errorf("%s", errorTitle)
-		log.Error(err, errorMessage)
-
-		condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: strcase.ToCamel(errorTitle), Message: errorMessage}
-		if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
-			log.Error(err, updateFailure)
-			return ctrl.Result{}, err
-		}
-
-		// End reconciliation as it is not permitted to have orphaned manifests
-		return ctrl.Result{}, nil
 	}
 
 	log.Info("Ready to push ManifestWork(s) to schedule the workload to the identified cluster")
@@ -488,7 +468,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		if errors.As(err, &manifestWorkFailedErr) {
 			log.Error(err, "Failed to apply ManifestWork")
 
-			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: err.Error()}
+			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: utils.Capitalise(err.Error())}
 			schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 			if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 				log.Error(err, updateFailure)
@@ -505,6 +485,24 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Error(err, "Error occurred while validating the state of the ManifestWork applied")
 			return ctrl.Result{}, err
 		}
+	}
+
+	// Check for orphaned manifests
+	// Orphaned manifests can arise if there are ancillary services that are not referenced by a workload resource and are therefore not added to a bundle
+	// If there are more manifests in the CR than the count of manifests across all ManifestWorks this indicates that some manifests are unaccounted for
+	// It is unlikely that the values are equal since an ancillary manifest can be included in many ManifestWorks
+	if len(p2CodeSchedulingManifest.Spec.Manifests) > placedManifests {
+		warningMessage := "All workloads have been successfully scheduled however orphaned manifests have been found, ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
+		log.Info(warningMessage)
+
+		condition := metav1.Condition{Type: tentativelyScheduled, Status: metav1.ConditionTrue, Reason: "OrphanedManifest", Message: warningMessage}
+		if err := r.UpdateStatus(p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
+			log.Error(err, updateFailure)
+			return ctrl.Result{}, fmt.Errorf("%w", err)
+		}
+
+		// End reconciliation
+		return ctrl.Result{}, nil
 	}
 
 	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
@@ -606,126 +604,12 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		resources.Add(namespaceResource)
 	}
 
-	podSpec, err := extractPodSpec(*workload)
+	rs, err := analysePodSpec(workload, ancillaryResources)
 	if err != nil {
 		return ResourceSet{}, []ServicePortPair{}, err
+	} else {
+		resources = append(resources, rs...)
 	}
-
-	// Open question is there a need to consider nodeSelector, tolerations
-
-	// Later could support other types and check for aws and azure types
-	// Could also include storage classes
-	if len(podSpec.Volumes) > 0 {
-		for _, volume := range podSpec.Volumes {
-			if volume.PersistentVolumeClaim != nil {
-				pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
-				if err != nil {
-					return ResourceSet{}, []ServicePortPair{}, err
-				}
-
-				resources.Add(pvcResource)
-			}
-
-			// Later check for storage class
-			// pvc := &corev1.PersistentVolumeClaim{}
-			// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
-			// 	return err
-			// }
-
-			if volume.ConfigMap != nil {
-				cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
-				if err != nil {
-					return ResourceSet{}, []ServicePortPair{}, err
-				}
-
-				resources.Add(cmResource)
-			}
-
-			if volume.Secret != nil {
-				secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
-				if err != nil {
-					return ResourceSet{}, []ServicePortPair{}, err
-				}
-
-				resources.Add(secretResource)
-			}
-		}
-	}
-
-	if podSpec.ServiceAccountName != "" {
-		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
-		if err != nil {
-			return ResourceSet{}, []ServicePortPair{}, err
-		}
-
-		resources.Add(saResource)
-	}
-
-	// Examine Containers and InitContainers for ancillary resources
-	containers := podSpec.Containers
-	containers = append(containers, podSpec.InitContainers...)
-
-	// TODO examine resource requests for container
-	for _, container := range containers {
-		if len(container.EnvFrom) > 0 {
-			for _, envSource := range container.EnvFrom {
-				if envSource.ConfigMapRef != nil {
-					cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
-					if err != nil {
-						return ResourceSet{}, []ServicePortPair{}, err
-					}
-
-					resources.Add(cmResource)
-				}
-
-				if envSource.SecretRef != nil {
-					secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
-					if err != nil {
-						return ResourceSet{}, []ServicePortPair{}, err
-					}
-
-					resources.Add(secretResource)
-				}
-			}
-		}
-
-		if len(container.Env) > 0 {
-			for _, envVar := range container.Env {
-				if envVar.ValueFrom != nil {
-					if envVar.ValueFrom.ConfigMapKeyRef != nil {
-						cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
-						if err != nil {
-							return ResourceSet{}, []ServicePortPair{}, err
-						}
-
-						resources.Add(cmResource)
-					}
-
-					if envVar.ValueFrom.SecretKeyRef != nil {
-						secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
-						if err != nil {
-							return ResourceSet{}, []ServicePortPair{}, err
-						}
-
-						resources.Add(secretResource)
-					}
-				} else if envVar.Value != "" && isServiceNamePortReference(envVar.Value) {
-					// If the workload contains an environment variable that references a service append it to the externalConnections list
-					// This list is later used to create MultiClusterNetwork resources to expose services across clusters if required
-					serviceName := strings.Split(envVar.Value, ":")[0]
-					port, err := strconv.Atoi(strings.Split(envVar.Value, ":")[1])
-
-					if err != nil {
-						return ResourceSet{}, []ServicePortPair{}, err
-					}
-
-					externalConnections = append(externalConnections, ServicePortPair{serviceName: serviceName, port: port})
-				}
-			}
-		}
-	}
-
-	// Look into securityContextProfile under container and pod for later version
 
 	// TODO test this case
 	// Add services to the bundle
@@ -763,6 +647,122 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 	}
 
 	return resources, externalConnections, nil
+}
+
+func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+	resources := ResourceSet{}
+
+	podSpec, err := extractPodSpec(*workload)
+	if err != nil {
+		return ResourceSet{}, err
+	}
+
+	// Open question is there a need to consider nodeSelector, tolerations
+
+	// TODO analyse securityContextProfile under container and pod for later version
+
+	// Later could support other types and check for aws and azure types
+	// Could also include storage classes
+	if len(podSpec.Volumes) > 0 {
+		for _, volume := range podSpec.Volumes {
+			if volume.PersistentVolumeClaim != nil {
+				pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+				if err != nil {
+					return ResourceSet{}, err
+				}
+
+				resources.Add(pvcResource)
+			}
+
+			// Later check for storage class
+			// pvc := &corev1.PersistentVolumeClaim{}
+			// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
+			// 	return err
+			// }
+
+			if volume.ConfigMap != nil {
+				cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
+				if err != nil {
+					return ResourceSet{}, err
+				}
+
+				resources.Add(cmResource)
+			}
+
+			if volume.Secret != nil {
+				secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
+				if err != nil {
+					return ResourceSet{}, err
+				}
+
+				resources.Add(secretResource)
+			}
+		}
+	}
+
+	if podSpec.ServiceAccountName != "" {
+		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
+		if err != nil {
+			return ResourceSet{}, err
+		}
+
+		resources.Add(saResource)
+	}
+
+	// Examine Containers and InitContainers for ancillary resources
+	containers := podSpec.Containers
+	containers = append(containers, podSpec.InitContainers...)
+
+	// TODO examine resource requests for container
+	for _, container := range containers {
+		if len(container.EnvFrom) > 0 {
+			for _, envSource := range container.EnvFrom {
+				if envSource.ConfigMapRef != nil {
+					cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
+					if err != nil {
+						return ResourceSet{}, err
+					}
+
+					resources.Add(cmResource)
+				}
+
+				if envSource.SecretRef != nil {
+					secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
+					if err != nil {
+						return ResourceSet{}, err
+					}
+
+					resources.Add(secretResource)
+				}
+			}
+		}
+
+		if len(container.Env) > 0 {
+			for _, envVar := range container.Env {
+				if envVar.ValueFrom != nil {
+					if envVar.ValueFrom.ConfigMapKeyRef != nil {
+						cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
+						if err != nil {
+							return ResourceSet{}, err
+						}
+
+						resources.Add(cmResource)
+					}
+
+					if envVar.ValueFrom.SecretKeyRef != nil {
+						secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
+						if err != nil {
+							return ResourceSet{}, err
+						}
+
+						resources.Add(secretResource)
+					}
+				}
+			}
+		}
+	}
+
+	return resources, nil
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getAssociatedPlacement(bundle *Bundle, p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) (*clusterv1beta1.Placement, error) {

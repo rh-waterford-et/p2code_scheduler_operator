@@ -66,7 +66,8 @@ func (resourceSet *ResourceSet) Find(name string, kind string) (*Resource, error
 		}
 	}
 
-	return nil, fmt.Errorf("cannot find a resource of type %s with the name %s", kind, name)
+	errorMessage := fmt.Sprintf("cannot find a resource of type %s with the name %s", kind, name)
+	return nil, &ResourceNotFound{errorMessage}
 }
 
 func (resourceSet *ResourceSet) FindWorkload(name string) (*Resource, error) {
@@ -76,7 +77,8 @@ func (resourceSet *ResourceSet) FindWorkload(name string) (*Resource, error) {
 		}
 	}
 
-	return nil, fmt.Errorf("cannot find a workload resource with the name %s", name)
+	errorMessage := fmt.Sprintf("cannot find a workload resource with the name %s", name)
+	return nil, &ResourceNotFound{errorMessage}
 }
 
 func (resourceSet *ResourceSet) FilterByKind(kind string) ResourceSet {
