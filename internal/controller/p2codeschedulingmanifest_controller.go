@@ -663,40 +663,39 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 	// Later could support other types and check for aws and azure types
 	// Could also include storage classes
-	if len(podSpec.Volumes) > 0 {
-		for _, volume := range podSpec.Volumes {
-			if volume.PersistentVolumeClaim != nil {
-				pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
-				if err != nil {
-					return ResourceSet{}, err
-				}
 
-				resources.Add(pvcResource)
+	for _, volume := range podSpec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+			if err != nil {
+				return ResourceSet{}, err
 			}
 
-			// Later check for storage class
-			// pvc := &corev1.PersistentVolumeClaim{}
-			// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
-			// 	return err
-			// }
+			resources.Add(pvcResource)
+		}
 
-			if volume.ConfigMap != nil {
-				cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
-				if err != nil {
-					return ResourceSet{}, err
-				}
+		// Later check for storage class
+		// pvc := &corev1.PersistentVolumeClaim{}
+		// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
+		// 	return err
+		// }
 
-				resources.Add(cmResource)
+		if volume.ConfigMap != nil {
+			cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
+			if err != nil {
+				return ResourceSet{}, err
 			}
 
-			if volume.Secret != nil {
-				secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
-				if err != nil {
-					return ResourceSet{}, err
-				}
+			resources.Add(cmResource)
+		}
 
-				resources.Add(secretResource)
+		if volume.Secret != nil {
+			secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
+			if err != nil {
+				return ResourceSet{}, err
 			}
+
+			resources.Add(secretResource)
 		}
 	}
 
@@ -715,49 +714,43 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 	// TODO examine resource requests for container
 	for _, container := range containers {
-		if len(container.EnvFrom) > 0 {
-			for _, envSource := range container.EnvFrom {
-				if envSource.ConfigMapRef != nil {
-					cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
-					if err != nil {
-						return ResourceSet{}, err
-					}
-
-					resources.Add(cmResource)
+		for _, envSource := range container.EnvFrom {
+			if envSource.ConfigMapRef != nil {
+				cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
+				if err != nil {
+					return ResourceSet{}, err
 				}
 
-				if envSource.SecretRef != nil {
-					secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
-					if err != nil {
-						return ResourceSet{}, err
-					}
+				resources.Add(cmResource)
+			}
 
-					resources.Add(secretResource)
+			if envSource.SecretRef != nil {
+				secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
+				if err != nil {
+					return ResourceSet{}, err
 				}
+
+				resources.Add(secretResource)
 			}
 		}
 
-		if len(container.Env) > 0 {
-			for _, envVar := range container.Env {
-				if envVar.ValueFrom != nil {
-					if envVar.ValueFrom.ConfigMapKeyRef != nil {
-						cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
-						if err != nil {
-							return ResourceSet{}, err
-						}
-
-						resources.Add(cmResource)
-					}
-
-					if envVar.ValueFrom.SecretKeyRef != nil {
-						secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
-						if err != nil {
-							return ResourceSet{}, err
-						}
-
-						resources.Add(secretResource)
-					}
+		for _, envVar := range container.Env {
+			if envVar.ValueFrom.ConfigMapKeyRef != nil {
+				cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
+				if err != nil {
+					return ResourceSet{}, err
 				}
+
+				resources.Add(cmResource)
+			}
+
+			if envVar.ValueFrom.SecretKeyRef != nil {
+				secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
+				if err != nil {
+					return ResourceSet{}, err
+				}
+
+				resources.Add(secretResource)
 			}
 		}
 	}
