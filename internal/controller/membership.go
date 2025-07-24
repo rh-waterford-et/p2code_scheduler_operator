@@ -10,10 +10,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func (r *P2CodeSchedulingManifestReconciler) doesManagedClusterSetExist(managedClusterSetName string) (bool, error) {
+func (r *P2CodeSchedulingManifestReconciler) doesManagedClusterSetExist(ctx context.Context, managedClusterSetName string) (bool, error) {
 	managedClusterSetList := &clusterv1beta2.ManagedClusterSetList{}
-	if err := r.List(context.TODO(), managedClusterSetList); err != nil {
-		return false, err
+	if err := r.List(ctx, managedClusterSetList); err != nil {
+		return false, fmt.Errorf("%w", err)
 	}
 
 	for _, managedClusterSet := range managedClusterSetList.Items {
@@ -25,7 +25,7 @@ func (r *P2CodeSchedulingManifestReconciler) doesManagedClusterSetExist(managedC
 	return false, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) isManagedClusterInSet(managedClusterSetName string, managedClusterName string) (bool, error) {
+func (r *P2CodeSchedulingManifestReconciler) isManagedClusterInSet(ctx context.Context, managedClusterSetName string, managedClusterName string) (bool, error) {
 	label := fmt.Sprintf("cluster.open-cluster-management.io/clusterset=%s", managedClusterSetName)
 	labelSelector, err := labels.Parse(label)
 	if err != nil {
@@ -37,7 +37,7 @@ func (r *P2CodeSchedulingManifestReconciler) isManagedClusterInSet(managedCluste
 	}
 
 	managedClusterList := &clusterv1.ManagedClusterList{}
-	err = r.List(context.TODO(), managedClusterList, &listOptions)
+	err = r.List(ctx, managedClusterList, &listOptions)
 	if err != nil {
 		return false, fmt.Errorf("failed to list all managed clusters with the label %s", label)
 	}
@@ -51,14 +51,14 @@ func (r *P2CodeSchedulingManifestReconciler) isManagedClusterInSet(managedCluste
 	return false, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) isClusterSetBound(clustersetName string) (bool, error) {
+func (r *P2CodeSchedulingManifestReconciler) isClusterSetBound(ctx context.Context, clustersetName string) (bool, error) {
 	listOptions := client.ListOptions{
 		Namespace: P2CodeSchedulerNamespace,
 	}
 
 	clusterSetBindingList := &clusterv1beta2.ManagedClusterSetBindingList{}
-	if err := r.List(context.TODO(), clusterSetBindingList, &listOptions); err != nil {
-		return false, err
+	if err := r.List(ctx, clusterSetBindingList, &listOptions); err != nil {
+		return false, fmt.Errorf("%w", err)
 	}
 
 	for _, binding := range clusterSetBindingList.Items {
@@ -70,15 +70,15 @@ func (r *P2CodeSchedulingManifestReconciler) isClusterSetBound(clustersetName st
 	return false, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) isClusterSetEmpty(clustersetName string) (bool, error) {
+func (r *P2CodeSchedulingManifestReconciler) isClusterSetEmpty(ctx context.Context, clustersetName string) (bool, error) {
 	labelSelector := labels.SelectorFromSet(labels.Set{
 		clusterv1beta2.ClusterSetLabel: clustersetName,
 	})
 
 	managedClusterList := &clusterv1.ManagedClusterList{}
-	err := r.List(context.TODO(), managedClusterList, &client.ListOptions{LabelSelector: labelSelector})
+	err := r.List(ctx, managedClusterList, &client.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("%w", err)
 	}
 
 	return len(managedClusterList.Items) < 1, nil
