@@ -34,6 +34,9 @@ const (
 		"releases/download/%s/bundle.yaml"
 	certmanagerVersion = "v1.14.4"
 	certmanagerURLTmpl = "https://github.com/jetstack/cert-manager/releases/download/%s/cert-manager.yaml"
+	kubectl            = "/usr/bin/kubectl"
+	kind               = "/usr/bin/kind"
+	mk                 = "/usr/bin/make"
 )
 
 func warnError(err error) {
@@ -43,7 +46,7 @@ func warnError(err error) {
 // InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
 func InstallPrometheusOperator() error {
 	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.Command("kubectl", "create", "-f", url)
+	cmd := exec.Command(kubectl, "create", "-f", url)
 	_, err := Run(cmd)
 	return err
 }
@@ -71,7 +74,7 @@ func Run(cmd *exec.Cmd) ([]byte, error) {
 // UninstallPrometheusOperator uninstalls the prometheus
 func UninstallPrometheusOperator() {
 	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
+	cmd := exec.Command(kubectl, "delete", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		warnError(err)
 	}
@@ -80,7 +83,7 @@ func UninstallPrometheusOperator() {
 // UninstallCertManager uninstalls the cert manager
 func UninstallCertManager() {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
+	cmd := exec.Command(kubectl, "delete", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		warnError(err)
 	}
@@ -89,13 +92,13 @@ func UninstallCertManager() {
 // InstallCertManager installs the cert manager bundle.
 func InstallCertManager() error {
 	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "apply", "-f", url)
+	cmd := exec.Command(kubectl, "apply", "-f", url)
 	if _, err := Run(cmd); err != nil {
 		return err
 	}
 	// Wait for cert-manager-webhook to be ready, which can take time if cert-manager
 	// was re-installed after uninstalling on a cluster.
-	cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
+	cmd = exec.Command(kubectl, "wait", "deployment.apps/cert-manager-webhook",
 		"--for", "condition=Available",
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
@@ -112,7 +115,7 @@ func LoadImageToKindClusterWithName(name string) error {
 		cluster = v
 	}
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
+	cmd := exec.Command(kind, kindOptions...)
 	_, err := Run(cmd)
 	return err
 }
@@ -151,7 +154,7 @@ var _ = Describe("controller", Ordered, func() {
 
 		By("creating manager namespace")
 		// nolint:gosec // G204 - this is a test so we can ignore rogue command execution
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		cmd := exec.Command(kubectl, "create", "ns", namespace)
 		_, _ = Run(cmd)
 	})
 
@@ -163,7 +166,7 @@ var _ = Describe("controller", Ordered, func() {
 		UninstallCertManager()
 
 		By("removing manager namespace")
-		cmd := exec.Command("kubectl", "delete", "ns", namespace)
+		cmd := exec.Command(kubectl, "delete", "ns", namespace)
 		_, _ = Run(cmd)
 	})
 
@@ -177,7 +180,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("building the manager(Operator) image")
 			// nolint:gosec // G204 - this is a test so we can ignore rogue command execution
-			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
+			cmd := exec.Command(mk, "docker-build", fmt.Sprintf("IMG=%s", projectimage))
 			_, err = Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -186,13 +189,13 @@ var _ = Describe("controller", Ordered, func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("installing CRDs")
-			cmd = exec.Command("make", "install")
+			cmd = exec.Command(mk, "install")
 			_, err = Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("deploying the controller-manager")
 			// nolint:gosec // G204 - this is a test so we can ignore rogue command execution
-			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
+			cmd = exec.Command(mk, "deploy", fmt.Sprintf("IMG=%s", projectimage))
 			_, err = Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -201,7 +204,7 @@ var _ = Describe("controller", Ordered, func() {
 				// Get pod name
 
 				// nolint:gosec // G204 - this is a test so we can ignore rogue command execution
-				cmd = exec.Command("kubectl", "get",
+				cmd = exec.Command(kubectl, "get",
 					"pods", "-l", "control-plane=controller-manager",
 					"-o", "go-template={{ range .items }}"+
 						"{{ if not .metadata.deletionTimestamp }}"+
@@ -221,7 +224,7 @@ var _ = Describe("controller", Ordered, func() {
 
 				// Validate pod status
 				// nolint:gosec // G204 - this is a test so we can ignore rogue command execution
-				cmd = exec.Command("kubectl", "get",
+				cmd = exec.Command(kubectl, "get",
 					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
 					"-n", namespace,
 				)

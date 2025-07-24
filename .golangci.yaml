@@ -111,7 +111,7 @@ linters-settings:
   goimports:
     # put imports beginning with prefix after 3rd-party packages;
     # it's a comma-separated list of prefixes
-    local-prefixes: github.com/openshift/oc-mirror
+    local-prefixes: github.com/rh-waterford-et/p2code_scheduler_operator
 
   depguard:
     rules:
@@ -125,4 +125,4 @@ linters-settings:
 
   wrapcheck:
     ignorePackageGlobs:
-      - github.com/openshift/oc-mirror/v2/*
+      - github.com/rh-waterford-et/p2code_scheduler_operator/*
