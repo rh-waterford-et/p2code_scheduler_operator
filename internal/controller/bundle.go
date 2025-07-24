@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"slices"
 
-	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
+	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -33,6 +33,7 @@ func (r *P2CodeSchedulingManifestReconciler) deleteBundles(ownerReference string
 	delete(r.Bundles, ownerReference)
 }
 
+// nolint:cyclop // not to concenred about cognitive complexity (brainfreeze)
 func (r *P2CodeSchedulingManifestReconciler) buildBundle(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
 	// Convert p2CodeSchedulingManifest.Spec.Manifests to Resources for easier manipulation
 	resources, err := bulkConvertToResourceSet(p2CodeSchedulingManifest.Spec.Manifests)
@@ -79,12 +80,13 @@ func (r *P2CodeSchedulingManifestReconciler) buildBundle(p2CodeSchedulingManifes
 		for _, workload := range workloads {
 			// Check if a bundle already exists for the workload
 			// Create a bundle for the workload if needed and find its ancillary resources
+			// nolint // used in the if != err section
 			bundle, err := r.getBundle(workload.metadata.name, p2CodeSchedulingManifest.Name)
 			if err != nil {
 				// TODO calculate workload ResourceRequests
 				workloadAncillaryResources, externalConnections, err := analyseWorkload(workload, ancillaryResources)
 				if err != nil {
-					return err
+					return fmt.Errorf("%w", err)
 				}
 
 				bundleResources := ResourceSet{}
