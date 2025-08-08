@@ -8,11 +8,11 @@ type ManifestWorkFailedError struct {
 	message string
 }
 
-type ManifestWorkNotReady struct {
+type ManifestWorkNotReadyError struct {
 	message string
 }
 
-type ResourceNotFound struct {
+type ResourceNotFoundError struct {
 	message string
 }
 
@@ -24,10 +24,10 @@ func (e ManifestWorkFailedError) Error() string {
 	return e.message
 }
 
-func (e ManifestWorkNotReady) Error() string {
+func (e ManifestWorkNotReadyError) Error() string {
 	return e.message
 }
 
-func (e ResourceNotFound) Error() string {
+func (e ResourceNotFoundError) Error() string {
 	return e.message
 }

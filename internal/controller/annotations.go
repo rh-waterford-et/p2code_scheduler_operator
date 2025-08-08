@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
+	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 

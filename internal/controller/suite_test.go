@@ -33,7 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
+	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -55,7 +55,8 @@ func TestControllers(t *testing.T) {
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	ctx, cancel = context.WithCancel(context.TODO())
+	// nolint:fatcontext // this is for testing
+	ctx, cancel = context.WithCancel(context.Background())
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
