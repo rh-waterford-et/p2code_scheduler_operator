@@ -6,8 +6,8 @@ import (
 	"regexp"
 	"slices"
 
-	schedulingv1alpha1 "github.com/PoolPooer/p2code-scheduler/api/v1alpha1"
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
+	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
