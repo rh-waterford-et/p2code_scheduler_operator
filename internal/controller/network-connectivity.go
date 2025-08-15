@@ -9,8 +9,12 @@ import (
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 const MultiClusterNetworkNamespace = "ac3no-system"
@@ -50,8 +54,8 @@ func (r *P2CodeSchedulingManifestReconciler) getNetworkConnections(p2CodeSchedul
 	return networkConnections, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(networkConnections []NetworkConnection) error {
-	multiClusterNetwork, err := r.fetchMultiClusterNetwork()
+func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Context, networkConnections []NetworkConnection) error {
+	multiClusterNetwork, err := r.fetchMultiClusterNetwork(ctx)
 	if err != nil {
 		return err
 	}
@@ -85,16 +89,16 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(networkConnect
 
 	// Update the MultiClusterNetwork resource
 	multiClusterNetwork.Spec.Links = links
-	if err = r.Update(context.TODO(), multiClusterNetwork); err != nil {
-		return err
+	if err = r.Update(ctx, multiClusterNetwork); err != nil {
+		return fmt.Errorf("%w", err)
 	}
 
 	return nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) fetchMultiClusterNetwork() (*networkoperatorv1alpha1.MultiClusterNetwork, error) {
+func (r *P2CodeSchedulingManifestReconciler) fetchMultiClusterNetwork(ctx context.Context) (*networkoperatorv1alpha1.MultiClusterNetwork, error) {
 	multiClusterNetwork := &networkoperatorv1alpha1.MultiClusterNetwork{}
-	err := r.Get(context.TODO(), types.NamespacedName{Name: MultiClusterNetworkResourceName, Namespace: MultiClusterNetworkNamespace}, multiClusterNetwork)
+	err := r.Get(ctx, types.NamespacedName{Name: MultiClusterNetworkResourceName, Namespace: MultiClusterNetworkNamespace}, multiClusterNetwork)
 	// Create MultiClusterNetwork if it doesnt exist
 	if err != nil && apierrors.IsNotFound(err) {
 		multiClusterNetwork = &networkoperatorv1alpha1.MultiClusterNetwork{
@@ -107,14 +111,46 @@ func (r *P2CodeSchedulingManifestReconciler) fetchMultiClusterNetwork() (*networ
 			},
 		}
 
-		if err := r.Create(context.TODO(), multiClusterNetwork); err != nil {
-			return nil, err
+		if err := r.Create(ctx, multiClusterNetwork); err != nil {
+			return nil, fmt.Errorf("%w", err)
 		}
 	} else if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w", err)
 	}
 
 	return multiClusterNetwork, nil
+}
+
+func isMultiClusterNetworkInstalled() (bool, error) {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		return false, fmt.Errorf("%w", err)
+	}
+
+	httpClient, err := rest.HTTPClientFor(cfg)
+	if err != nil {
+		return false, fmt.Errorf("%w", err)
+	}
+
+	restMapper, err := apiutil.NewDynamicRESTMapper(cfg, httpClient)
+	if err != nil {
+		return false, fmt.Errorf("%w", err)
+	}
+
+	gvk := networkoperatorv1alpha1.GroupVersion.WithKind("MultiClusterNetwork")
+	_, err = restMapper.RESTMapping(
+		schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind},
+		gvk.Version,
+	)
+	if err == nil {
+		return true, nil
+	}
+
+	if meta.IsNoMatchError(err) {
+		return false, nil
+	}
+
+	return false, fmt.Errorf("%w", err)
 }
 
 func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection, error) {
@@ -160,7 +196,7 @@ func (b *Bundle) getExternalService(connectionName string) *Resource {
 // serviceName must only contain lowercase alphanumeric characters or hyphens adhering to Kubernetes naming conventions
 // and port corresponds to any valid network port
 func isServiceNamePortReference(s string) bool {
-	r, _ := regexp.Compile("^[a-z0-9/-]+:[0-9]+$")
+	r := regexp.MustCompile("^[a-z0-9/-]+:[0-9]+$")
 	return r.MatchString(s)
 }
 
