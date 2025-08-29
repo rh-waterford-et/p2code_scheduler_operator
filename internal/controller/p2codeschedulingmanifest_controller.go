@@ -741,6 +741,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 			}
 		}
 
+		// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
 		for _, envVar := range container.Env {
 			if envVar.ValueFrom != nil {
 				if envVar.ValueFrom.ConfigMapKeyRef != nil {
