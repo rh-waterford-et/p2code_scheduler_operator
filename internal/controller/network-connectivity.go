@@ -9,12 +9,8 @@ import (
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
 const MultiClusterNetworkNamespace = "ac3no-system"
@@ -36,7 +32,7 @@ type NetworkConnection struct {
 	target  Location
 }
 
-func (r *P2CodeSchedulingManifestReconciler) getNetworkConnections(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]NetworkConnection, error) {
+func (r *P2CodeSchedulingManifestReconciler) getAllNetworkConnections(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]NetworkConnection, error) {
 	networkConnections := []NetworkConnection{}
 	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
 		if len(bundle.externalConnections) < 1 {
@@ -62,28 +58,26 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 
 	links := multiClusterNetwork.Spec.Links
 	for _, networkConnection := range networkConnections {
-		if isLinkRequired(networkConnection) {
-			// Check if a link exists for a given network path
-			link := getLink(links, networkConnection)
-			if link != nil {
-				// Add connectionName to the link's list of services if necessary
-				// TODO confirm if there should be a check to see if the ports match - should there be a list of port service mappings in the MultiClusterLink
-				if !slices.Contains(link.Services, networkConnection.service.serviceName) {
-					link.Services = append(link.Services, networkConnection.service.serviceName)
-				}
-			} else {
-				// Create new MultiClusterLink
-				link := networkoperatorv1alpha1.MultiClusterLink{
-					SourceCluster:   networkConnection.source.cluster,
-					SourceNamespace: networkConnection.source.namespace,
-					TargetCluster:   networkConnection.target.cluster,
-					TargetNamespace: networkConnection.target.namespace,
-					Services:        []string{networkConnection.service.serviceName},
-					Port:            networkConnection.service.port,
-				}
-
-				links = append(links, link)
+		// Check if a link exists for a given network path
+		link := getLink(links, networkConnection)
+		if link != nil {
+			// Add connectionName to the link's list of services if necessary
+			// TODO confirm if there should be a check to see if the ports match - should there be a list of port service mappings in the MultiClusterLink
+			if !slices.Contains(link.Services, networkConnection.service.serviceName) {
+				link.Services = append(link.Services, networkConnection.service.serviceName)
 			}
+		} else {
+			// Create new MultiClusterLink
+			link := networkoperatorv1alpha1.MultiClusterLink{
+				SourceCluster:   networkConnection.source.cluster,
+				SourceNamespace: networkConnection.source.namespace,
+				TargetCluster:   networkConnection.target.cluster,
+				TargetNamespace: networkConnection.target.namespace,
+				Services:        []string{networkConnection.service.serviceName},
+				Port:            networkConnection.service.port,
+			}
+
+			links = append(links, link)
 		}
 	}
 
@@ -121,38 +115,6 @@ func (r *P2CodeSchedulingManifestReconciler) fetchMultiClusterNetwork(ctx contex
 	return multiClusterNetwork, nil
 }
 
-func isMultiClusterNetworkInstalled() (bool, error) {
-	cfg, err := rest.InClusterConfig()
-	if err != nil {
-		return false, fmt.Errorf("%w", err)
-	}
-
-	httpClient, err := rest.HTTPClientFor(cfg)
-	if err != nil {
-		return false, fmt.Errorf("%w", err)
-	}
-
-	restMapper, err := apiutil.NewDynamicRESTMapper(cfg, httpClient)
-	if err != nil {
-		return false, fmt.Errorf("%w", err)
-	}
-
-	gvk := networkoperatorv1alpha1.GroupVersion.WithKind("MultiClusterNetwork")
-	_, err = restMapper.RESTMapping(
-		schema.GroupKind{Group: gvk.Group, Kind: gvk.Kind},
-		gvk.Version,
-	)
-	if err == nil {
-		return true, nil
-	}
-
-	if meta.IsNoMatchError(err) {
-		return false, nil
-	}
-
-	return false, fmt.Errorf("%w", err)
-}
-
 func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection, error) {
 	// Ensure the bundle contains a single workload resource
 	workloads, _ := b.resources.Categorise()
@@ -174,8 +136,8 @@ func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection,
 			}
 
 			if service := bundle.getExternalService(connection.serviceName); service != nil {
-				externalConn := NetworkConnection{service: connection, source: Location{cluster: bundle.clusterName, namespace: service.metadata.namespace}, target: targetLocation}
-				networkConnections = append(networkConnections, externalConn)
+				nc := NetworkConnection{service: connection, source: Location{cluster: bundle.clusterName, namespace: service.metadata.namespace}, target: targetLocation}
+				networkConnections = append(networkConnections, nc)
 			}
 		}
 	}
@@ -190,6 +152,18 @@ func (b *Bundle) getExternalService(connectionName string) *Resource {
 		}
 	}
 	return nil
+}
+
+// Filter the network connections and return a list of connections that must be enabled through the MultiClusterNetwork feature
+func filterNetworkConnections(networkConnections []NetworkConnection) []NetworkConnection {
+	connections := []NetworkConnection{}
+	for _, nc := range networkConnections {
+		if isLinkRequired(nc) {
+			connections = append(connections, nc)
+		}
+	}
+
+	return connections
 }
 
 // Check if a given string is of the format serviceName:port where

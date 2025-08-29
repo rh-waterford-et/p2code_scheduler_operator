@@ -173,7 +173,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	isInstalled, err := utils.IsCRDInstalled(mgr.GetRESTMapper(), networkoperatorv1alpha1.GroupVersion.WithKind("MultiClusterNetwork"))
+	isInstalled, err := utils.IsMultiClusterNetworkInstalled()
 	if err != nil || !isInstalled {
 		setupLog.Info("WARNING: MultiClusterNetwork API is not installed, scheduler may not perform as expected")
 	}

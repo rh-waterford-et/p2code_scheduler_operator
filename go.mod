@@ -6,6 +6,7 @@ require (
 	github.com/iancoleman/strcase v0.3.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.38.0
+	github.com/rh-waterford-et/ac3_networkoperator v0.0.0-20250827142345-f9bb184bd12f
 	k8s.io/api v0.33.3
 	k8s.io/apimachinery v0.33.3
 	k8s.io/client-go v0.33.3
@@ -15,9 +16,6 @@ require (
 
 require (
 	cel.dev/expr v0.19.1 // indirect
-	github.com/google/btree v1.1.3 // indirect
-	github.com/rh-waterford-et/ac3_networkoperator v0.0.0-20250703111701-54dd6eaefb7e // indirect
-	gopkg.in/evanphx/json-patch.v4 v4.12.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect

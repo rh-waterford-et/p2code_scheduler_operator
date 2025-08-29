@@ -44,6 +44,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
+	"github.com/rh-waterford-et/p2code-scheduler-operator/utils"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
@@ -520,7 +521,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
 	if connectionCount != 0 {
 		// Ensure the MultiClusterNetwork resource is installed
-		isInstalled, err := isMultiClusterNetworkInstalled()
+		isInstalled, err := utils.IsMultiClusterNetworkInstalled()
 		if err != nil {
 			log.Error(err, "Error occurred while checking if the MultiClusterNetwork resource is present")
 			return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -542,23 +543,27 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			return ctrl.Result{}, nil
 		}
 
-		connections, err := r.getNetworkConnections(p2CodeSchedulingManifest)
+		connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
 		if err != nil {
 			log.Error(err, "Error occurred while retrieving network connections")
 			return ctrl.Result{}, err
 		}
 
-		// Create MultiClusterLinks and update the MultiClusterNetwork resource
-		err = r.registerNetworkLinks(ctx, connections)
-		if err != nil {
-			log.Error(err, "Error occurred while registering network links")
-			return ctrl.Result{}, err
+		filteredConnections := filterNetworkConnections(connections)
+
+		if len(filteredConnections) != 0 {
+			// Create MultiClusterLinks and update the MultiClusterNetwork resource
+			err = r.registerNetworkLinks(ctx, filteredConnections)
+			if err != nil {
+				log.Error(err, "Error occurred while registering network links")
+				return ctrl.Result{}, err
+			}
+
+			log.Info("Network links successfully registered")
 		}
 
-		// TODO add status update to mark that network links have been created
-
-		// Check if there is a link registered for every externalConnection
-		if len(connections) != connectionCount {
+		// Check if there is a link registered for every externalConnection that cannot be reached without the help of the MultiClusterNetwork feature
+		if len(filteredConnections) != connectionCount-len(connections) {
 			message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
 			log.Info(message)
 
@@ -570,8 +575,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			// End reconciliation
 			return ctrl.Result{}, nil
-		} else {
-			log.Info("Network links successfully registered")
 		}
 	}
 
