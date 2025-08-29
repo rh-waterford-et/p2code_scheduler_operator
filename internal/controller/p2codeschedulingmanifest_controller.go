@@ -339,7 +339,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		var resourceNotFoundErr *ResourceNotFoundError
 		if errors.As(err, &misconfiguredManifestErr) || errors.As(err, &resourceNotFoundErr) {
 			log.Error(err, configurationIssue)
-			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: strings.ToUpper(err.Error())}
+			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
 			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -422,7 +422,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			if errors.As(err, &misconfiguredManifestErr) {
 				log.Error(err, configurationIssue)
 
-				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: strings.ToUpper(err.Error())}
+				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
 				if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 					log.Error(err, updateFailure)
 					return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -473,7 +473,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		if errors.As(err, &manifestWorkFailedErr) {
 			log.Error(err, "Failed to apply ManifestWork")
 
-			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: strings.ToUpper(err.Error())}
+			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: utils.SentenceCase(err.Error())}
 			schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 				log.Error(err, updateFailure)

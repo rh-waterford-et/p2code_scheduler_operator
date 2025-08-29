@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"strings"
 
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -40,4 +41,8 @@ func IsMultiClusterNetworkInstalled() (bool, error) {
 	}
 
 	return false, fmt.Errorf("%w", err)
+}
+
+func SentenceCase(s string) string {
+	return strings.ToUpper(s[:1]) + s[1:]
 }
