@@ -6,7 +6,7 @@ require (
 	github.com/iancoleman/strcase v0.3.0
 	github.com/onsi/ginkgo/v2 v2.23.4
 	github.com/onsi/gomega v1.38.0
-	github.com/rh-waterford-et/ac3_networkoperator v0.0.0-20250827142345-f9bb184bd12f
+	github.com/rh-waterford-et/ac3_networkoperator v0.0.0-20250902135921-23588aab903e
 	k8s.io/api v0.33.3
 	k8s.io/apimachinery v0.33.3
 	k8s.io/client-go v0.33.3

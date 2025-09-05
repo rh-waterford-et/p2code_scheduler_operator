@@ -68,7 +68,7 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 			}
 		} else {
 			// Create new MultiClusterLink
-			link := networkoperatorv1alpha1.MultiClusterLink{
+			link := &networkoperatorv1alpha1.MultiClusterLink{
 				SourceCluster:   networkConnection.source.cluster,
 				SourceNamespace: networkConnection.source.namespace,
 				TargetCluster:   networkConnection.target.cluster,
@@ -101,7 +101,7 @@ func (r *P2CodeSchedulingManifestReconciler) fetchMultiClusterNetwork(ctx contex
 				Namespace: MultiClusterNetworkNamespace,
 			},
 			Spec: networkoperatorv1alpha1.MultiClusterNetworkSpec{
-				Links: []networkoperatorv1alpha1.MultiClusterLink{},
+				Links: []*networkoperatorv1alpha1.MultiClusterLink{},
 			},
 		}
 
@@ -178,10 +178,10 @@ func isLinkRequired(nc NetworkConnection) bool {
 	return !(nc.source.cluster == nc.target.cluster && nc.source.namespace == nc.target.namespace)
 }
 
-func getLink(links []networkoperatorv1alpha1.MultiClusterLink, nc NetworkConnection) *networkoperatorv1alpha1.MultiClusterLink {
+func getLink(links []*networkoperatorv1alpha1.MultiClusterLink, nc NetworkConnection) *networkoperatorv1alpha1.MultiClusterLink {
 	for _, link := range links {
 		if link.SourceCluster == nc.source.cluster && link.TargetCluster == nc.target.cluster && link.SourceNamespace == nc.source.namespace && link.TargetNamespace == nc.target.namespace {
-			return &link
+			return link
 		}
 	}
 	return nil
