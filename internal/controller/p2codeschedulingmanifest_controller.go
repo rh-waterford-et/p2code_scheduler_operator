@@ -666,23 +666,27 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 			}
 		}
 
+		// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
 		for _, envVar := range container.Env {
-			if envVar.ValueFrom.ConfigMapKeyRef != nil {
-				cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
-				if err != nil {
-					return ResourceSet{}, fmt.Errorf("%w", err)
+			if envVar.ValueFrom != nil {
+				if envVar.ValueFrom.ConfigMapKeyRef != nil {
+					cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
+					if err != nil {
+						return ResourceSet{}, fmt.Errorf("%w", err)
+					}
+
+					resources.Add(cmResource)
 				}
 
-				resources.Add(cmResource)
-			}
+				if envVar.ValueFrom.SecretKeyRef != nil {
+					secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
+					if err != nil {
+						return ResourceSet{}, fmt.Errorf("%w", err)
+					}
 
-			if envVar.ValueFrom.SecretKeyRef != nil {
-				secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
-				if err != nil {
-					return ResourceSet{}, fmt.Errorf("%w", err)
+					resources.Add(secretResource)
 				}
 
-				resources.Add(secretResource)
 			}
 		}
 	}
