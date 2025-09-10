@@ -597,21 +597,6 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	// Could also include storage classes
 
 	for _, volume := range podSpec.Volumes {
-		if volume.PersistentVolumeClaim != nil {
-			pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
-			if err != nil {
-				return ResourceSet{}, fmt.Errorf("%w", err)
-			}
-
-			resources.Add(pvcResource)
-		}
-
-		// Later check for storage class
-		// pvc := &corev1.PersistentVolumeClaim{}
-		// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
-		// 	return err
-		// }
-
 		if volume.ConfigMap != nil {
 			cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
 			if err != nil {
