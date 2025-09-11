@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
+	"github.com/rh-waterford-et/p2code-scheduler-operator/utils"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
@@ -384,6 +385,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					log.Error(err, updateFailure)
 					return ctrl.Result{}, fmt.Errorf("%w", err)
 				}
+
+				message := fmt.Sprintf("Scheduling requests cannot be satisfied: %s", condition.Message)
+				log.Info(message)
+				return ctrl.Result{}, nil
 			}
 		}
 
@@ -681,7 +686,11 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 func (r *P2CodeSchedulingManifestReconciler) getAssociatedPlacement(ctx context.Context, bundle *Bundle, p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) (*clusterv1beta1.Placement, error) {
 	// Use the p2CodeSchedulingManifest name and bundle name to build a unique Placement name
-	placementName := fmt.Sprintf("%s-%s-bundle", p2CodeSchedulingManifest.Name, bundle.name)
+	placementName := fmt.Sprintf("%s-%s", p2CodeSchedulingManifest.Name, bundle.name)
+	if len(placementName) > utils.MaxResourceNameLength {
+		// TODO introduce logic to shorten/truncate the resource name
+		return nil, fmt.Errorf("Placement name is too long")
+	}
 	placement := &clusterv1beta1.Placement{}
 	err := r.Get(ctx, types.NamespacedName{Name: placementName, Namespace: P2CodeSchedulerNamespace}, placement)
 
