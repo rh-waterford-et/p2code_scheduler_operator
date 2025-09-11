@@ -497,7 +497,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		log.Info(warningMessage)
 
 		condition := metav1.Condition{Type: tentativelyScheduled, Status: metav1.ConditionTrue, Reason: "OrphanedManifest", Message: warningMessage}
-		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
+		schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
+		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 			log.Error(err, updateFailure)
 			return ctrl.Result{}, fmt.Errorf("%w", err)
 		}
