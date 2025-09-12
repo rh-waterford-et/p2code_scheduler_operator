@@ -43,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
+	"github.com/rh-waterford-et/p2code-scheduler-operator/utils"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	workv1 "open-cluster-management.io/api/work/v1"
 )
@@ -68,9 +69,10 @@ const (
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
 type P2CodeSchedulingManifestReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Bundles  map[string][]*Bundle
+	Scheme     *runtime.Scheme
+	Recorder   record.EventRecorder
+	Bundles    map[string][]*Bundle
+	OwnerLabel string
 }
 
 // +kubebuilder:rbac:groups=scheduling.p2code.eu,resources=p2codeschedulingmanifests,verbs=get;list;watch;create;update;patch;delete
@@ -112,6 +114,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		log.Error(err, fetchFailure)
 		return ctrl.Result{}, fmt.Errorf("%w", err)
 	}
+
+	// Use the name of the P2CodeSchedulingManifest instance to create an ownership label to be applied to resources it manages
+	r.OwnerLabel = utils.TruncateNameIfNeeded(p2CodeSchedulingManifest.Name)
 
 	// If the status is empty set the status as scheduling in progress
 	if len(p2CodeSchedulingManifest.Status.Conditions) == 0 {
@@ -175,7 +180,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
 			// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
-			if err := r.deleteOwnedManifestWorkList(ctx, p2CodeSchedulingManifest.Name); err != nil {
+			if err := r.deleteOwnedManifestWorkList(ctx, r.OwnerLabel); err != nil {
 				log.Error(err, "Failed to perform clean up operations on instance before deleting")
 				return ctrl.Result{}, fmt.Errorf("%w", err)
 			}
@@ -384,6 +389,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					log.Error(err, updateFailure)
 					return ctrl.Result{}, fmt.Errorf("%w", err)
 				}
+
+				message := fmt.Sprintf("Scheduling requests cannot be satisfied: %s", condition.Message)
+				log.Info(message)
+				return ctrl.Result{}, nil
 			}
 		}
 
@@ -404,11 +413,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		placedManifests += len(bundle.resources)
 
 		manifestWork := &workv1.ManifestWork{}
-		manifestWorkName := fmt.Sprintf("%s-%s-bundle", p2CodeSchedulingManifest.Name, bundle.name)
+		manifestWorkName := utils.TruncateNameIfNeeded(fmt.Sprintf("%s-%s", bundle.name, p2CodeSchedulingManifest.Name))
+
 		err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: bundle.clusterName}, manifestWork)
 		// Define ManifestWork to be created if a ManifestWork doesnt exist for this bundle
 		if err != nil && apierrors.IsNotFound(err) {
-			newManifestWork, err := r.generateManifestWorkForBundle(manifestWorkName, bundle.clusterName, p2CodeSchedulingManifest.Name, bundle.resources)
+			newManifestWork, err := r.generateManifestWorkForBundle(manifestWorkName, bundle.clusterName, r.OwnerLabel, bundle.resources)
 			var misconfiguredManifestErr *MisconfiguredManifestError
 			if errors.As(err, &misconfiguredManifestErr) {
 				log.Error(err, configurationIssue)
@@ -443,7 +453,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	// Fetch list of applied ManifestWorks owned by this P2CodeSchedulingManifest instance
-	manifestWorkList, err := r.getOwnedManifestWorkList(ctx, p2CodeSchedulingManifest.Name)
+	manifestWorkList, err := r.getOwnedManifestWorkList(ctx, r.OwnerLabel)
 	if err != nil {
 		log.Error(err, "Failed to fetch list of ManifestWorks owned by the P2CodeSchedulingManifest instance")
 		return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -492,7 +502,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		log.Info(warningMessage)
 
 		condition := metav1.Condition{Type: tentativelyScheduled, Status: metav1.ConditionTrue, Reason: "OrphanedManifest", Message: warningMessage}
-		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
+		schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
+		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 			log.Error(err, updateFailure)
 			return ctrl.Result{}, fmt.Errorf("%w", err)
 		}
@@ -681,7 +692,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 func (r *P2CodeSchedulingManifestReconciler) getAssociatedPlacement(ctx context.Context, bundle *Bundle, p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) (*clusterv1beta1.Placement, error) {
 	// Use the p2CodeSchedulingManifest name and bundle name to build a unique Placement name
-	placementName := fmt.Sprintf("%s-%s-bundle", p2CodeSchedulingManifest.Name, bundle.name)
+	placementName := utils.TruncateNameIfNeeded(fmt.Sprintf("%s-%s", bundle.name, p2CodeSchedulingManifest.Name))
 	placement := &clusterv1beta1.Placement{}
 	err := r.Get(ctx, types.NamespacedName{Name: placementName, Namespace: P2CodeSchedulerNamespace}, placement)
 
