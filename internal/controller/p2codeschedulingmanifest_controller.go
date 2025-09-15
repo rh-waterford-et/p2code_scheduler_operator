@@ -552,9 +552,6 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		resources = append(resources, rs...)
 	}
 
-	// TODO test this case
-	// Add services to the bundle
-	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
 	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
 		// If the workload is a StatefulSet the associated service can be found in the ServiceName field of its spec
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
@@ -569,23 +566,6 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		}
 
 		resources.Add(svcResource)
-	} else {
-		// Get a list of all services and check if the service selector matches the labels on the workload
-		services := ancillaryResources.FilterByKind("Service")
-		for _, service := range services {
-			svc := &corev1.Service{}
-			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
-			}
-
-			for k, v := range svc.Spec.Selector {
-				value, ok := workload.metadata.labels[k]
-
-				if ok && value == v {
-					resources.Add(service)
-				}
-			}
-		}
 	}
 
 	return resources, externalConnections, nil
@@ -595,14 +575,33 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
 	resources := ResourceSet{}
 
-	podSpec, err := extractPodSpec(*workload)
+	podTemplateSpec, err := extractPodTemplateSpec(*workload)
 	if err != nil {
 		return ResourceSet{}, fmt.Errorf("%w", err)
 	}
+	podSpec := podTemplateSpec.Spec
 
 	// Open question is there a need to consider nodeSelector, tolerations
 
 	// TODO analyse securityContextProfile under container and pod for later version
+
+	// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
+	// Get a list of all services and check if the service selector matches the metadata labels
+	services := ancillaryResources.FilterByKind("Service")
+	for _, service := range services {
+		svc := &corev1.Service{}
+		if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		for k, v := range svc.Spec.Selector {
+			value, ok := podTemplateSpec.Labels[k]
+
+			if ok && value == v {
+				resources.Add(service)
+			}
+		}
+	}
 
 	// Later could support other types and check for aws and azure types
 	// Could also include storage classes
@@ -897,44 +896,44 @@ func (r *P2CodeSchedulingManifestReconciler) getSchedulingDecisions(p2CodeSchedu
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func extractPodSpec(workload Resource) (*corev1.PodSpec, error) {
+func extractPodTemplateSpec(workload Resource) (*corev1.PodTemplateSpec, error) {
 	switch kind := workload.metadata.groupVersionKind.Kind; kind {
 	case "Pod":
 		pod := &corev1.Pod{}
 		if err := json.Unmarshal(workload.manifest.Raw, pod); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &pod.Spec, nil
+		return &corev1.PodTemplateSpec{Spec: pod.Spec}, nil
 	case "Deployment":
 		deployment := &appsv1.Deployment{}
 		if err := json.Unmarshal(workload.manifest.Raw, deployment); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &deployment.Spec.Template.Spec, nil
+		return &deployment.Spec.Template, nil
 	case "StatefulSet":
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &statefulset.Spec.Template.Spec, nil
+		return &statefulset.Spec.Template, nil
 	case "DaemonSet":
 		daemonset := &appsv1.DaemonSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, daemonset); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &daemonset.Spec.Template.Spec, nil
+		return &daemonset.Spec.Template, nil
 	case "Job":
 		job := &batchv1.Job{}
 		if err := json.Unmarshal(workload.manifest.Raw, job); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &job.Spec.Template.Spec, nil
+		return &job.Spec.Template, nil
 	case "CronJob":
 		cronJob := &batchv1.CronJob{}
 		if err := json.Unmarshal(workload.manifest.Raw, cronJob); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &cronJob.Spec.JobTemplate.Spec.Template.Spec, nil
+		return &cronJob.Spec.JobTemplate.Spec.Template, nil
 	default:
 		return nil, fmt.Errorf("unable to extract the pod spec for workload %s of type %s", workload.metadata.name, workload.metadata.groupVersionKind.Kind)
 	}
