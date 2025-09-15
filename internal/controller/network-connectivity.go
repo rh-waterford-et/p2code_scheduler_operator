@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
@@ -58,14 +57,14 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 
 	links := multiClusterNetwork.Spec.Links
 	for _, networkConnection := range networkConnections {
+		// Create a networkoperatorv1alpha1.ServicePortPair from the network connection details
+		service := networkoperatorv1alpha1.ServicePortPair{Name: networkConnection.service.serviceName, Port: networkConnection.service.port}
+
 		// Check if a link exists for a given network path
 		link := getLink(links, networkConnection)
 		if link != nil {
-			// Add connectionName to the link's list of services if necessary
-			// TODO confirm if there should be a check to see if the ports match - should there be a list of port service mappings in the MultiClusterLink
-			if !slices.Contains(link.Services, networkConnection.service.serviceName) {
-				link.Services = append(link.Services, networkConnection.service.serviceName)
-			}
+			// Update the services of the link if necessary
+			appendServiceToLink(link, service)
 		} else {
 			// Create new MultiClusterLink
 			link := &networkoperatorv1alpha1.MultiClusterLink{
@@ -73,8 +72,7 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 				SourceNamespace: networkConnection.source.namespace,
 				TargetCluster:   networkConnection.target.cluster,
 				TargetNamespace: networkConnection.target.namespace,
-				Services:        []string{networkConnection.service.serviceName},
-				Port:            networkConnection.service.port,
+				Services:        []networkoperatorv1alpha1.ServicePortPair{service},
 			}
 
 			links = append(links, link)
@@ -185,4 +183,15 @@ func getLink(links []*networkoperatorv1alpha1.MultiClusterLink, nc NetworkConnec
 		}
 	}
 	return nil
+}
+
+func appendServiceToLink(link *networkoperatorv1alpha1.MultiClusterLink, service networkoperatorv1alpha1.ServicePortPair) *networkoperatorv1alpha1.MultiClusterLink {
+	for _, s := range link.Services {
+		if s.Name == service.Name && s.Port == service.Port {
+			return link
+		}
+	}
+
+	link.Services = append(link.Services, service)
+	return link
 }
