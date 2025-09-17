@@ -373,6 +373,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			// Check if the placement was satisfied and a suitable cluster found for the bundle
 			placementSatisfiedCondition := meta.FindStatusCondition(placement.Status.Conditions, "PlacementSatisfied")
+			if placementSatisfiedCondition == nil {
+				message := fmt.Sprintf("No PlacementSatisfied condition found for %s placement", placement.Name)
+				log.Info(message)
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+
 			if placementSatisfiedCondition.Status == metav1.ConditionTrue {
 				clusterName, err := r.getSelectedCluster(ctx, *placement)
 				if err != nil {
