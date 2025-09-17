@@ -628,6 +628,8 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		}
 	}
 
+	// ServiceAccountName is the prefered field to use to reference a service account
+	// The ServiceAccount field has been deprecated
 	if podSpec.ServiceAccountName != "" {
 		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
 		if err != nil {
@@ -701,8 +703,8 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 func bundleRolesWithServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
 	resources := ResourceSet{}
-	clusterRoleBindings := ancillaryResources.FilterByKind("ClusterRoleBindings")
-	roleBindings := ancillaryResources.FilterByKind("RoleBindings")
+	clusterRoleBindings := ancillaryResources.FilterByKind("ClusterRoleBinding")
+	roleBindings := ancillaryResources.FilterByKind("RoleBinding")
 
 	for _, clusterRoleBinding := range clusterRoleBindings {
 		binding := &rbacv1.ClusterRoleBinding{}
