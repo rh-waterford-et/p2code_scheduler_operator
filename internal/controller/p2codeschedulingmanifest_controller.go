@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -371,6 +373,12 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			// Check if the placement was satisfied and a suitable cluster found for the bundle
 			placementSatisfiedCondition := meta.FindStatusCondition(placement.Status.Conditions, "PlacementSatisfied")
+			if placementSatisfiedCondition == nil {
+				message := fmt.Sprintf("No PlacementSatisfied condition found for %s placement", placement.Name)
+				log.Info(message)
+				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+			}
+
 			if placementSatisfiedCondition.Status == metav1.ConditionTrue {
 				clusterName, err := r.getSelectedCluster(ctx, *placement)
 				if err != nil {
@@ -626,6 +634,8 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		}
 	}
 
+	// ServiceAccountName is the preferred field to use to reference a service account
+	// The ServiceAccount field has been deprecated
 	if podSpec.ServiceAccountName != "" {
 		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
 		if err != nil {
@@ -633,6 +643,14 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		}
 
 		resources.Add(saResource)
+
+		// Check if any ClusterRoleBindings or RoleBindings use this service account as a subject
+		roleResources, err := bundleRolesWithServiceAccount(*saResource, ancillaryResources)
+		if err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		resources = append(resources, roleResources...)
 	}
 
 	// Examine Containers and InitContainers for ancillary resources
@@ -682,6 +700,53 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 					resources.Add(secretResource)
 				}
 
+			}
+		}
+	}
+
+	return resources, nil
+}
+
+// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+func bundleRolesWithServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+	resources := ResourceSet{}
+	clusterRoleBindings := ancillaryResources.FilterByKind("ClusterRoleBinding")
+	roleBindings := ancillaryResources.FilterByKind("RoleBinding")
+
+	for _, clusterRoleBinding := range clusterRoleBindings {
+		binding := &rbacv1.ClusterRoleBinding{}
+		if err := json.Unmarshal(clusterRoleBinding.manifest.Raw, binding); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		for _, subject := range binding.Subjects {
+			if subject.Kind == "ServiceAccount" && subject.Name == serviceAccount.metadata.name && subject.Namespace == serviceAccount.metadata.namespace {
+				clusterRole, err := ancillaryResources.Find(binding.RoleRef.Name, binding.RoleRef.Kind)
+				if err != nil {
+					return ResourceSet{}, fmt.Errorf("%w", err)
+				}
+
+				resources.Add(clusterRole)
+				resources.Add(clusterRoleBinding)
+			}
+		}
+	}
+
+	for _, roleBinding := range roleBindings {
+		binding := &rbacv1.RoleBinding{}
+		if err := json.Unmarshal(roleBinding.manifest.Raw, binding); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		for _, subject := range binding.Subjects {
+			if subject.Kind == "ServiceAccount" && subject.Name == serviceAccount.metadata.name && subject.Namespace == serviceAccount.metadata.namespace {
+				role, err := ancillaryResources.Find(binding.RoleRef.Name, binding.RoleRef.Kind)
+				if err != nil {
+					return ResourceSet{}, fmt.Errorf("%w", err)
+				}
+
+				resources.Add(role)
+				resources.Add(roleBinding)
 			}
 		}
 	}
@@ -826,9 +891,9 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 	manifestList := []workv1.Manifest{}
 
 	for _, resource := range bundeledResources {
-		// Ensure a namespace is defined for the resource
-		// Unless the resource is not namespaced eg namespace
-		if resource.metadata.namespace == "" && resource.metadata.groupVersionKind.Kind != "Namespace" {
+		// Ensure a namespace is defined for the resource unless the resource is not namespaced
+		nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding"}
+		if resource.metadata.namespace == "" && !slices.Contains(nonNamespacedResources, resource.metadata.groupVersionKind.Kind) {
 			errorMessage := fmt.Sprintf("invalid manifest, no namespace specified for %s %s", resource.metadata.name, resource.metadata.groupVersionKind.Kind)
 			return workv1.ManifestWork{}, &MisconfiguredManifestError{errorMessage}
 		}
