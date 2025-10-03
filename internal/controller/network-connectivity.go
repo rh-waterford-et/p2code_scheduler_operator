@@ -61,7 +61,7 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 		service := networkoperatorv1alpha1.ServicePortPair{Name: networkConnection.service.serviceName, Port: networkConnection.service.port}
 
 		// Check if a link exists for a given network path
-		link := getLink(links, networkConnection)
+		_, link := getLink(links, networkConnection)
 		if link != nil {
 			// Update the services of the link if necessary
 			appendServiceToLink(link, service)
@@ -76,6 +76,38 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 			}
 
 			links = append(links, link)
+		}
+	}
+
+	// Update the MultiClusterNetwork resource
+	multiClusterNetwork.Spec.Links = links
+	if err = r.Update(ctx, multiClusterNetwork); err != nil {
+		return fmt.Errorf("%w", err)
+	}
+
+	return nil
+}
+
+func (r *P2CodeSchedulingManifestReconciler) deleteNetworkLinks(ctx context.Context, networkConnections []NetworkConnection) error {
+	multiClusterNetwork, err := r.fetchMultiClusterNetwork(ctx)
+	if err != nil {
+		return err
+	}
+
+	links := multiClusterNetwork.Spec.Links
+	for _, networkConnection := range networkConnections {
+		linkIndex, link := getLink(links, networkConnection)
+		if link != nil {
+			serviceIndex, _ := getService(link.Services, networkConnection.service.serviceName)
+			// Delete the link if it does not connect any other services
+			if len(link.Services) == 1 && serviceIndex != -1 {
+				links = append(links[:linkIndex], links[linkIndex+1:]...)
+			} else if serviceIndex != -1 {
+				// Remove the service from the links service list
+				link.Services = append(link.Services[:serviceIndex], link.Services[serviceIndex+1:]...)
+			}
+		} else {
+			continue
 		}
 	}
 
@@ -176,22 +208,33 @@ func isLinkRequired(nc NetworkConnection) bool {
 	return !(nc.source.cluster == nc.target.cluster && nc.source.namespace == nc.target.namespace)
 }
 
-func getLink(links []*networkoperatorv1alpha1.MultiClusterLink, nc NetworkConnection) *networkoperatorv1alpha1.MultiClusterLink {
-	for _, link := range links {
+func getLink(links []*networkoperatorv1alpha1.MultiClusterLink, nc NetworkConnection) (int, *networkoperatorv1alpha1.MultiClusterLink) {
+	for index, link := range links {
 		if link.SourceCluster == nc.source.cluster && link.TargetCluster == nc.target.cluster && link.SourceNamespace == nc.source.namespace && link.TargetNamespace == nc.target.namespace {
-			return link
+			return index, link
 		}
 	}
-	return nil
+	return -1, nil
 }
 
-func appendServiceToLink(link *networkoperatorv1alpha1.MultiClusterLink, service networkoperatorv1alpha1.ServicePortPair) *networkoperatorv1alpha1.MultiClusterLink {
+// TODO remove after upstream PR approved
+func getService(services []networkoperatorv1alpha1.ServicePortPair, serviceName string) (int, *networkoperatorv1alpha1.ServicePortPair) {
+	for index, service := range services {
+		if service.Name == serviceName {
+			return index, &service
+		}
+	}
+
+	return -1, nil
+}
+
+// TODO remove after upstream PR approved
+func appendServiceToLink(link *networkoperatorv1alpha1.MultiClusterLink, service networkoperatorv1alpha1.ServicePortPair) {
 	for _, s := range link.Services {
 		if s.Name == service.Name && s.Port == service.Port {
-			return link
+			return
 		}
 	}
 
 	link.Services = append(link.Services, service)
-	return link
 }

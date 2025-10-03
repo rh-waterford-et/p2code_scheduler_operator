@@ -180,8 +180,24 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
 			// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
 			if err := r.deleteOwnedManifestWorkList(ctx, p2CodeSchedulingManifest.Name); err != nil {
-				log.Error(err, "Failed to perform clean up operations on instance before deleting")
+				log.Error(err, "Failed to perform clean up of ManifestWorks associated with the instance before deleting")
 				return ctrl.Result{}, fmt.Errorf("%w", err)
+			}
+
+			// Remove network links if needed here
+			// TODO Refactor the networking functions to get a list of network connections that were made
+			connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+			if err != nil {
+				log.Error(err, "Error occurred while retrieving network connections")
+				return ctrl.Result{}, err
+			}
+
+			filteredConnections := filterNetworkConnections(connections)
+
+			err = r.deleteNetworkLinks(ctx, filteredConnections)
+			if err != nil {
+				log.Error(err, "Failed to clean up MultiClusterNetworkLinks associated with the instance before deleting")
+				return ctrl.Result{}, err
 			}
 
 			r.deleteBundles(p2CodeSchedulingManifest.Name)
