@@ -58,13 +58,13 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 	links := multiClusterNetwork.Spec.Links
 	for _, networkConnection := range networkConnections {
 		// Create a networkoperatorv1alpha1.ServicePortPair from the network connection details
-		service := networkoperatorv1alpha1.ServicePortPair{Name: networkConnection.service.serviceName, Port: networkConnection.service.port}
+		service := &networkoperatorv1alpha1.ServicePortPair{Name: networkConnection.service.serviceName, Port: networkConnection.service.port}
 
 		// Check if a link exists for a given network path
 		_, link := getLink(links, networkConnection)
 		if link != nil {
 			// Update the services of the link if necessary
-			appendServiceToLink(link, service)
+			link.AddService(service)
 		} else {
 			// Create new MultiClusterLink
 			link := &networkoperatorv1alpha1.MultiClusterLink{
@@ -72,7 +72,7 @@ func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Co
 				SourceNamespace: networkConnection.source.namespace,
 				TargetCluster:   networkConnection.target.cluster,
 				TargetNamespace: networkConnection.target.namespace,
-				Services:        []networkoperatorv1alpha1.ServicePortPair{service},
+				Services:        []*networkoperatorv1alpha1.ServicePortPair{service},
 			}
 
 			links = append(links, link)
@@ -98,7 +98,7 @@ func (r *P2CodeSchedulingManifestReconciler) deleteNetworkLinks(ctx context.Cont
 	for _, networkConnection := range networkConnections {
 		linkIndex, link := getLink(links, networkConnection)
 		if link != nil {
-			serviceIndex, _ := getService(link.Services, networkConnection.service.serviceName)
+			serviceIndex, _ := link.GetService(networkConnection.service.serviceName)
 			// Delete the link if it does not connect any other services
 			if len(link.Services) == 1 && serviceIndex != -1 {
 				links = append(links[:linkIndex], links[linkIndex+1:]...)
@@ -106,8 +106,6 @@ func (r *P2CodeSchedulingManifestReconciler) deleteNetworkLinks(ctx context.Cont
 				// Remove the service from the links service list
 				link.Services = append(link.Services[:serviceIndex], link.Services[serviceIndex+1:]...)
 			}
-		} else {
-			continue
 		}
 	}
 
@@ -215,26 +213,4 @@ func getLink(links []*networkoperatorv1alpha1.MultiClusterLink, nc NetworkConnec
 		}
 	}
 	return -1, nil
-}
-
-// TODO remove after upstream PR approved
-func getService(services []networkoperatorv1alpha1.ServicePortPair, serviceName string) (int, *networkoperatorv1alpha1.ServicePortPair) {
-	for index, service := range services {
-		if service.Name == serviceName {
-			return index, &service
-		}
-	}
-
-	return -1, nil
-}
-
-// TODO remove after upstream PR approved
-func appendServiceToLink(link *networkoperatorv1alpha1.MultiClusterLink, service networkoperatorv1alpha1.ServicePortPair) {
-	for _, s := range link.Services {
-		if s.Name == service.Name && s.Port == service.Port {
-			return
-		}
-	}
-
-	link.Services = append(link.Services, service)
 }
