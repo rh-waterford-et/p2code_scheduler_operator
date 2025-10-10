@@ -645,7 +645,6 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
 func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
-	externalConnections := []ServicePortPair{}
 
 	podSpec, err := extractPodSpec(*workload)
 	if err != nil {
@@ -706,6 +705,21 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	// Examine Containers and InitContainers for ancillary resources
 	containers := podSpec.Containers
 	containers = append(containers, podSpec.InitContainers...)
+
+	rs, externalConnections, err := analyseContainers(containers, ancillaryResources)
+	if err != nil {
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+	} else {
+		resources = append(resources, rs...)
+	}
+
+	return resources, externalConnections, nil
+}
+
+// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+func analyseContainers(containers []corev1.Container, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
+	resources := ResourceSet{}
+	externalConnections := []ServicePortPair{}
 
 	// TODO examine resource requests for container
 	for _, container := range containers {
