@@ -7,9 +7,26 @@ import (
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
+
+const maxResourceNameLength = 63
+
+func TruncateNameIfNeeded(name string) string {
+	if errors := validation.IsQualifiedName(name); len(errors) != 0 {
+		truncatedName := name[:maxResourceNameLength]
+		truncatedName = strings.TrimRight(truncatedName, "-")
+		return truncatedName
+	} else {
+		return name
+	}
+}
+
+func SentenceCase(s string) string {
+	return strings.ToUpper(s[:1]) + s[1:]
+}
 
 func IsMultiClusterNetworkInstalled() (bool, error) {
 	cfg, err := rest.InClusterConfig()
@@ -41,8 +58,4 @@ func IsMultiClusterNetworkInstalled() (bool, error) {
 	}
 
 	return false, fmt.Errorf("%w", err)
-}
-
-func SentenceCase(s string) string {
-	return strings.ToUpper(s[:1]) + s[1:]
 }
