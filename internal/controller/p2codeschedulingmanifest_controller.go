@@ -185,7 +185,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			}
 
 			// Remove network links if needed here
-			// TODO Refactor the networking functions to get a list of network connections that were made
 			connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
 			if err != nil {
 				log.Error(err, "Error occurred while retrieving network connections")
@@ -633,40 +632,11 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 		resources = append(resources, rs...)
 	}
 
-	// TODO test this case
-	// Add services to the bundle
-	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
-	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
-		// If the workload is a StatefulSet the associated service can be found in the ServiceName field of its spec
-		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
-		statefulset := &appsv1.StatefulSet{}
-		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-		}
-
-		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
-		if err != nil {
-			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-		}
-
-		resources.Add(svcResource)
+	serviceResources, err := extractWorkloadServices(workload, ancillaryResources)
+	if err != nil {
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	} else {
-		// Get a list of all services and check if the service selector matches the labels on the workload
-		services := ancillaryResources.FilterByKind("Service")
-		for _, service := range services {
-			svc := &corev1.Service{}
-			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-			}
-
-			for k, v := range svc.Spec.Selector {
-				value, ok := workload.metadata.labels[k]
-
-				if ok && value == v {
-					resources.Add(service)
-				}
-			}
-		}
+		resources = append(resources, serviceResources...)
 	}
 
 	return resources, externalConnections, nil
@@ -797,6 +767,46 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	}
 
 	return resources, externalConnections, nil
+}
+
+func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+	resources := ResourceSet{}
+
+	// nolint:nestif
+	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
+		// If the workload is a StatefulSet the associated service can be found in the ServiceName field of its spec
+		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
+		statefulset := &appsv1.StatefulSet{}
+		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
+		if err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		resources.Add(svcResource)
+	} else {
+		// Get a list of all services and check if the service selector matches the labels on the workload
+		services := ancillaryResources.FilterByKind("Service")
+		for _, service := range services {
+			svc := &corev1.Service{}
+			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
+				return ResourceSet{}, fmt.Errorf("%w", err)
+			}
+
+			for k, v := range svc.Spec.Selector {
+				value, ok := workload.metadata.labels[k]
+
+				if ok && value == v {
+					resources.Add(service)
+				}
+			}
+		}
+	}
+
+	return resources, nil
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getAssociatedPlacement(ctx context.Context, bundle *Bundle, p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) (*clusterv1beta1.Placement, error) {
