@@ -185,7 +185,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 			// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
 			// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
-			if err := r.deleteOwnedManifestWorkList(ctx, p2CodeSchedulingManifest.Name); err != nil {
+			if err := r.deleteOwnedManifestWorkList(ctx, r.OwnerLabel); err != nil {
 				log.Error(err, "Failed to perform clean up of ManifestWorks associated with the instance before deleting")
 				return ctrl.Result{}, fmt.Errorf("%w", err)
 			}
@@ -480,7 +480,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	// Fetch list of applied ManifestWorks owned by this P2CodeSchedulingManifest instance
-	manifestWorkList, err := r.getOwnedManifestWorkList(ctx, p2CodeSchedulingManifest.Name)
+	manifestWorkList, err := r.getOwnedManifestWorkList(ctx, r.OwnerLabel)
 	if err != nil {
 		log.Error(err, "Failed to fetch list of ManifestWorks owned by the P2CodeSchedulingManifest instance")
 		return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -518,24 +518,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			log.Error(err, "Error occurred while validating the state of the ManifestWork applied")
 			return ctrl.Result{}, fmt.Errorf("%w", err)
 		}
-	}
-
-	// Check for orphaned manifests
-	// Orphaned manifests can arise if there are ancillary services that are not referenced by a workload resource and are therefore not added to a bundle
-	// If there are more manifests in the CR than the count of manifests across all ManifestWorks this indicates that some manifests are unaccounted for
-	// It is unlikely that the values are equal since an ancillary manifest can be included in many ManifestWorks
-	if len(p2CodeSchedulingManifest.Spec.Manifests) > placedManifests {
-		warningMessage := "All workloads have been successfully scheduled however orphaned manifests have been found, ensure all ancillary resources (services, configmaps, secrets, etc) are referenced by a workload resource"
-		log.Info(warningMessage)
-
-		condition := metav1.Condition{Type: tentativelyScheduled, Status: metav1.ConditionTrue, Reason: "OrphanedManifest", Message: warningMessage}
-		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
-			log.Error(err, updateFailure)
-			return ctrl.Result{}, fmt.Errorf("%w", err)
-		}
-
-		// End reconciliation
-		return ctrl.Result{}, nil
 	}
 
 	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
@@ -617,7 +599,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		log.Info(warningMessage)
 
 		condition := metav1.Condition{Type: tentativelyScheduled, Status: metav1.ConditionTrue, Reason: "OrphanedManifest", Message: warningMessage}
-		schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 			log.Error(err, updateFailure)
 			return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -661,14 +642,14 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 	if err != nil {
 		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	} else {
-		resources = append(resources, rs...)
+		resources.Merge(&rs)
 	}
 
 	serviceResources, err := extractWorkloadServices(workload, ancillaryResources)
 	if err != nil {
 		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	} else {
-		resources = append(resources, serviceResources...)
+		resources.Merge(&serviceResources)
 	}
 
 	return resources, externalConnections, nil
@@ -678,37 +659,9 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 
-	podSpec, err := extractPodSpec(*workload)
-	if err != nil {
-		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-	}
-
-	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
-		// If the workload is a StatefulSet the associated service can be found in the ServiceName field of its spec
-		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
-		statefulset := &appsv1.StatefulSet{}
-		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
-		}
-
-		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
-		if err != nil {
-			return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
-		}
-
-		resources.Add(svcResource)
-	}
-
-	return resources, externalConnections, nil
-}
-
-// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
-	resources := ResourceSet{}
-
 	podTemplateSpec, err := extractPodTemplateSpec(*workload)
 	if err != nil {
-		return ResourceSet{}, fmt.Errorf("%w", err)
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
 	podSpec := podTemplateSpec.Spec
 
@@ -720,21 +673,6 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	// Could also include storage classes
 
 	for _, volume := range podSpec.Volumes {
-		if volume.PersistentVolumeClaim != nil {
-			pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
-			if err != nil {
-				return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-			}
-
-			resources.Add(pvcResource)
-		}
-
-		// Later check for storage class
-		// pvc := &corev1.PersistentVolumeClaim{}
-		// if err := json.Unmarshal(pvcResource.manifest.Raw, pvc); err != nil {
-		// 	return err
-		// }
-
 		if volume.ConfigMap != nil {
 			cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
 			if err != nil {
@@ -767,10 +705,10 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		// Check if any ClusterRoleBindings or RoleBindings use this service account as a subject
 		roleResources, err := bundleRolesWithServiceAccount(*saResource, ancillaryResources)
 		if err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 		}
 
-		resources = append(resources, roleResources...)
+		resources.Merge(&roleResources)
 	}
 
 	// Examine Containers and InitContainers for ancillary resources
@@ -781,7 +719,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	if err != nil {
 		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	} else {
-		resources = append(resources, rs...)
+		resources.Merge(&rs)
 	}
 
 	return resources, externalConnections, nil
@@ -873,7 +811,13 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 
 		resources.Add(svcResource)
 	} else {
-		// Get a list of all services and check if the service selector matches the labels on the workload
+		// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
+		// Get a list of all services and check if the service selector matches the metadata labels		services := ancillaryResources.FilterByKind("Service")
+		podTemplateSpec, err := extractPodTemplateSpec(*workload)
+		if err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
 		services := ancillaryResources.FilterByKind("Service")
 		for _, service := range services {
 			svc := &corev1.Service{}
@@ -882,7 +826,7 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 			}
 
 			for k, v := range svc.Spec.Selector {
-				value, ok := workload.metadata.labels[k]
+				value, ok := podTemplateSpec.Labels[k]
 
 				if ok && value == v {
 					resources.Add(service)
@@ -1148,14 +1092,14 @@ func (r *P2CodeSchedulingManifestReconciler) getSchedulingDecisions(p2CodeSchedu
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func extractPodSpec(workload Resource) (*corev1.PodSpec, error) {
+func extractPodTemplateSpec(workload Resource) (*corev1.PodTemplateSpec, error) {
 	switch kind := workload.metadata.groupVersionKind.Kind; kind {
 	case "Pod":
 		pod := &corev1.Pod{}
 		if err := json.Unmarshal(workload.manifest.Raw, pod); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &pod.Spec, nil
+		return &corev1.PodTemplateSpec{ObjectMeta: pod.ObjectMeta, Spec: pod.Spec}, nil
 	case "Deployment":
 		deployment := &appsv1.Deployment{}
 		if err := json.Unmarshal(workload.manifest.Raw, deployment); err != nil {
