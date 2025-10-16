@@ -59,6 +59,12 @@ func (resourceSet *ResourceSet) Add(r *Resource) {
 	*resourceSet = append(*resourceSet, r)
 }
 
+func (resourceSet *ResourceSet) Merge(rs *ResourceSet) {
+	for _, resource := range *rs {
+		resourceSet.Add(resource)
+	}
+}
+
 func (resourceSet *ResourceSet) Find(name string, kind string) (*Resource, error) {
 	for _, resource := range resourceSet.FilterByKind(kind) {
 		if resource.metadata.name == name {

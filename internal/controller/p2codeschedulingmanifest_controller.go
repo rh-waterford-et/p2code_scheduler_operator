@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -62,6 +63,7 @@ const configurationIssue = "There is a configuration issue in the P2CodeScheduli
 const (
 	schedulingInProgress = "SchedulingInProgress"
 	schedulingSuccessful = "SchedulingSuccessful"
+	unreliablyScheduled  = "ScheduledWithUnreliableConnectivity"
 	schedulingFailed     = "SchedulingFailed"
 	tentativelyScheduled = "TentativelyScheduled"
 	finalizing           = "Finalizing"
@@ -86,6 +88,7 @@ type P2CodeSchedulingManifestReconciler struct {
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclustersetbindings,verbs=get;list;watch
 // +kubebuilder:rbac:groups=work.open-cluster-management.io,resources=manifestworks,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=ac3.redhat.com,resources=multiclusternetworks,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -183,8 +186,23 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			// Deleting ManifestWork resources associated with this P2CodeSchedulingManifest instance
 			// Placements and PlacementDecisions are automatically cleaned up as this instance is set as the owner reference for those resources
 			if err := r.deleteOwnedManifestWorkList(ctx, r.OwnerLabel); err != nil {
-				log.Error(err, "Failed to perform clean up operations on instance before deleting")
+				log.Error(err, "Failed to perform clean up of ManifestWorks associated with the instance before deleting")
 				return ctrl.Result{}, fmt.Errorf("%w", err)
+			}
+
+			// Remove network links if needed here
+			connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+			if err != nil {
+				log.Error(err, "Error occurred while retrieving network connections")
+				return ctrl.Result{}, err
+			}
+
+			filteredConnections := filterNetworkConnections(connections)
+
+			err = r.deleteNetworkLinks(ctx, filteredConnections)
+			if err != nil {
+				log.Error(err, "Failed to clean up MultiClusterNetworkLinks associated with the instance before deleting")
+				return ctrl.Result{}, err
 			}
 
 			r.deleteBundles(p2CodeSchedulingManifest.Name)
@@ -342,7 +360,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		var resourceNotFoundErr *ResourceNotFoundError
 		if errors.As(err, &misconfiguredManifestErr) || errors.As(err, &resourceNotFoundErr) {
 			log.Error(err, configurationIssue)
-			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: strings.ToUpper(err.Error())}
+			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
 			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -398,7 +416,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 					return ctrl.Result{}, fmt.Errorf("%w", err)
 				}
 
-				message := fmt.Sprintf("Scheduling requests cannot be satisfied: %s", condition.Message)
+				// End reconciliation if the placement cannot be satisfied
+				message := fmt.Sprintf("Scheduling failed as placement cannot be satisfied: %s", condition.Message)
 				log.Info(message)
 				return ctrl.Result{}, nil
 			}
@@ -431,7 +450,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			if errors.As(err, &misconfiguredManifestErr) {
 				log.Error(err, configurationIssue)
 
-				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: strings.ToUpper(err.Error())}
+				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
 				if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 					log.Error(err, updateFailure)
 					return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -482,7 +501,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		if errors.As(err, &manifestWorkFailedErr) {
 			log.Error(err, "Failed to apply ManifestWork")
 
-			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: strings.ToUpper(err.Error())}
+			condition := metav1.Condition{Type: schedulingFailed, Status: metav1.ConditionTrue, Reason: "ManifestWorkFailed", Message: utils.SentenceCase(err.Error())}
 			schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 				log.Error(err, updateFailure)
@@ -501,6 +520,76 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
+	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
+	log.Info("All workloads have been successfully scheduled to a suitable cluster, checking if network links need to be created")
+
+	expectedConnections := 0
+	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+		expectedConnections += len(bundle.externalConnections)
+	}
+
+	connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+	if err != nil {
+		log.Error(err, "Error occurred while retrieving network connections")
+		return ctrl.Result{}, err
+	}
+
+	// Check that there is a network connection for each externalConnection
+	// If a network connection cannot be formed network connectivity between components cannot be guaranteed
+	// A network connection cannot be created if for example the P2CodeSchedulingManifest doesnt have a service corresponding to the name of the externalConnection
+	if expectedConnections != len(connections) {
+		message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
+		log.Info(message)
+
+		condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
+		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+			log.Error(err, updateFailure)
+			return ctrl.Result{}, err
+		}
+
+		// End reconciliation
+		return ctrl.Result{}, nil
+	}
+
+	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
+	if len(connections) != 0 {
+		// Ensure the MultiClusterNetwork resource is installed
+		isInstalled, err := utils.IsMultiClusterNetworkInstalled()
+		if err != nil {
+			log.Error(err, "Error occurred while checking if the MultiClusterNetwork resource is present")
+			return ctrl.Result{}, fmt.Errorf("%w", err)
+		}
+
+		// Update the state informing the user that all workloads have been scheduled according to their requests
+		// Emphasise the fact that network connectivity between components cannot be guaranteed as it is not possible to create the necessary MultiClusterLinks without the resource being present
+		if !isInstalled {
+			message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed as it is not possible to create the necessary MultiClusterLinks without the resource being present"
+			log.Info(message)
+
+			condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: "MultiClusterNetworkResourceMissing", Message: message}
+			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+				log.Error(err, updateFailure)
+				return ctrl.Result{}, fmt.Errorf("%w", err)
+			}
+
+			// End reconciliation
+			return ctrl.Result{}, nil
+		}
+
+		filteredConnections := filterNetworkConnections(connections)
+
+		if len(filteredConnections) != 0 {
+			// Create MultiClusterLinks and update the MultiClusterNetwork resource
+			err = r.registerNetworkLinks(ctx, filteredConnections)
+			if err != nil {
+				log.Error(err, "Error occurred while registering network links")
+				return ctrl.Result{}, err
+			}
+
+			log.Info("Network links successfully registered")
+		}
+	}
+
 	// Check for orphaned manifests
 	// Orphaned manifests can arise if there are ancillary services that are not referenced by a workload resource and are therefore not added to a bundle
 	// If there are more manifests in the CR than the count of manifests across all ManifestWorks this indicates that some manifests are unaccounted for
@@ -510,7 +599,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		log.Info(warningMessage)
 
 		condition := metav1.Condition{Type: tentativelyScheduled, Status: metav1.ConditionTrue, Reason: "OrphanedManifest", Message: warningMessage}
-		schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 			log.Error(err, updateFailure)
 			return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -521,95 +609,65 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	message := "All workloads have been successfully scheduled to a suitable cluster"
-	log.Info(message)
-
 	condition := metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message}
-	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 	if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
 		log.Error(err, updateFailure)
 		return ctrl.Result{}, fmt.Errorf("%w", err)
 	}
 
+	log.Info("Reconciliation complete")
 	return ctrl.Result{}, nil
 }
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []string, error) {
+func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
-	externalConnections := []string{}
 
 	if workload.metadata.namespace == "" {
 		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.metadata.name)
-		return ResourceSet{}, []string{}, &MisconfiguredManifestError{errorMessage}
+		return ResourceSet{}, []ServicePortPair{}, &MisconfiguredManifestError{errorMessage}
 	}
 
 	if workload.metadata.namespace != "default" {
 		namespaceResource, err := ancillaryResources.Find(workload.metadata.namespace, "Namespace")
 		if err != nil {
-			return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 		}
 
 		resources.Add(namespaceResource)
 	}
 
-	rs, err := analysePodSpec(workload, ancillaryResources)
+	rs, externalConnections, err := analysePodSpec(workload, ancillaryResources)
 	if err != nil {
-		return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	} else {
-		resources = append(resources, rs...)
+		resources.Merge(&rs)
 	}
 
-	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
-		// If the workload is a StatefulSet the associated service can be found in the ServiceName field of its spec
-		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
-		statefulset := &appsv1.StatefulSet{}
-		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
-		}
-
-		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
-		if err != nil {
-			return ResourceSet{}, []string{}, fmt.Errorf("%w", err)
-		}
-
-		resources.Add(svcResource)
+	serviceResources, err := extractWorkloadServices(workload, ancillaryResources)
+	if err != nil {
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+	} else {
+		resources.Merge(&serviceResources)
 	}
 
 	return resources, externalConnections, nil
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 
 	podTemplateSpec, err := extractPodTemplateSpec(*workload)
 	if err != nil {
-		return ResourceSet{}, fmt.Errorf("%w", err)
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
 	podSpec := podTemplateSpec.Spec
 
 	// Open question is there a need to consider nodeSelector, tolerations
 
 	// TODO analyse securityContextProfile under container and pod for later version
-
-	// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
-	// Get a list of all services and check if the service selector matches the metadata labels
-	services := ancillaryResources.FilterByKind("Service")
-	for _, service := range services {
-		svc := &corev1.Service{}
-		if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
-		}
-
-		for k, v := range svc.Spec.Selector {
-			value, ok := podTemplateSpec.Labels[k]
-
-			if ok && value == v {
-				resources.Add(service)
-			}
-		}
-	}
 
 	// Later could support other types and check for aws and azure types
 	// Could also include storage classes
@@ -618,7 +676,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		if volume.ConfigMap != nil {
 			cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
 			if err != nil {
-				return ResourceSet{}, fmt.Errorf("%w", err)
+				return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 			}
 
 			resources.Add(cmResource)
@@ -627,7 +685,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		if volume.Secret != nil {
 			secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
 			if err != nil {
-				return ResourceSet{}, fmt.Errorf("%w", err)
+				return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 			}
 
 			resources.Add(secretResource)
@@ -639,7 +697,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	if podSpec.ServiceAccountName != "" {
 		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
 		if err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 		}
 
 		resources.Add(saResource)
@@ -647,15 +705,30 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		// Check if any ClusterRoleBindings or RoleBindings use this service account as a subject
 		roleResources, err := bundleRolesWithServiceAccount(*saResource, ancillaryResources)
 		if err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 		}
 
-		resources = append(resources, roleResources...)
+		resources.Merge(&roleResources)
 	}
 
 	// Examine Containers and InitContainers for ancillary resources
 	containers := podSpec.Containers
 	containers = append(containers, podSpec.InitContainers...)
+
+	rs, externalConnections, err := analyseContainers(containers, ancillaryResources)
+	if err != nil {
+		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+	} else {
+		resources.Merge(&rs)
+	}
+
+	return resources, externalConnections, nil
+}
+
+// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+func analyseContainers(containers []corev1.Container, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
+	resources := ResourceSet{}
+	externalConnections := []ServicePortPair{}
 
 	// TODO examine resource requests for container
 	for _, container := range containers {
@@ -663,7 +736,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 			if envSource.ConfigMapRef != nil {
 				cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
 				if err != nil {
-					return ResourceSet{}, fmt.Errorf("%w", err)
+					return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 				}
 
 				resources.Add(cmResource)
@@ -672,7 +745,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 			if envSource.SecretRef != nil {
 				secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
 				if err != nil {
-					return ResourceSet{}, fmt.Errorf("%w", err)
+					return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 				}
 
 				resources.Add(secretResource)
@@ -685,7 +758,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 				if envVar.ValueFrom.ConfigMapKeyRef != nil {
 					cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
 					if err != nil {
-						return ResourceSet{}, fmt.Errorf("%w", err)
+						return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 					}
 
 					resources.Add(cmResource)
@@ -694,12 +767,70 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 				if envVar.ValueFrom.SecretKeyRef != nil {
 					secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
 					if err != nil {
-						return ResourceSet{}, fmt.Errorf("%w", err)
+						return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 					}
 
 					resources.Add(secretResource)
 				}
+			}
 
+			if envVar.Value != "" && isServiceNamePortReference(envVar.Value) {
+				// If the workload contains an environment variable that references a service append it to the externalConnections list
+				// This list is later used to create MultiClusterNetwork resources to expose services across clusters if required
+				serviceName := strings.Split(envVar.Value, ":")[0]
+				port, err := strconv.Atoi(strings.Split(envVar.Value, ":")[1])
+
+				if err != nil {
+					return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+				}
+
+				externalConnections = append(externalConnections, ServicePortPair{serviceName: serviceName, port: port})
+			}
+		}
+	}
+
+	return resources, externalConnections, nil
+}
+
+func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+	resources := ResourceSet{}
+
+	// nolint:nestif
+	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
+		// If the workload is a StatefulSet the associated service can be found in the ServiceName field of its spec
+		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
+		statefulset := &appsv1.StatefulSet{}
+		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
+		if err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		resources.Add(svcResource)
+	} else {
+		// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
+		// Get a list of all services and check if the service selector matches the metadata labels		services := ancillaryResources.FilterByKind("Service")
+		podTemplateSpec, err := extractPodTemplateSpec(*workload)
+		if err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		services := ancillaryResources.FilterByKind("Service")
+		for _, service := range services {
+			svc := &corev1.Service{}
+			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
+				return ResourceSet{}, fmt.Errorf("%w", err)
+			}
+
+			for k, v := range svc.Spec.Selector {
+				value, ok := podTemplateSpec.Labels[k]
+
+				if ok && value == v {
+					resources.Add(service)
+				}
 			}
 		}
 	}
@@ -968,7 +1099,7 @@ func extractPodTemplateSpec(workload Resource) (*corev1.PodTemplateSpec, error) 
 		if err := json.Unmarshal(workload.manifest.Raw, pod); err != nil {
 			return nil, fmt.Errorf("%w", err)
 		}
-		return &corev1.PodTemplateSpec{Spec: pod.Spec}, nil
+		return &corev1.PodTemplateSpec{ObjectMeta: pod.ObjectMeta, Spec: pod.Spec}, nil
 	case "Deployment":
 		deployment := &appsv1.Deployment{}
 		if err := json.Unmarshal(workload.manifest.Raw, deployment); err != nil {

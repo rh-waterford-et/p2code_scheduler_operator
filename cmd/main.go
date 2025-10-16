@@ -35,8 +35,10 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	"github.com/rh-waterford-et/p2code-scheduler-operator/internal/controller"
+	"github.com/rh-waterford-et/p2code-scheduler-operator/utils"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	clusterv1beta2 "open-cluster-management.io/api/cluster/v1beta2"
@@ -56,6 +58,7 @@ func init() {
 	utilruntime.Must(clusterv1beta2.AddToScheme(scheme))
 	utilruntime.Must(workv1.AddToScheme(scheme))
 	utilruntime.Must(schedulingv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(networkoperatorv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -170,6 +173,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	isInstalled, err := utils.IsMultiClusterNetworkInstalled()
+	if err != nil || !isInstalled {
+		setupLog.Info("WARNING: MultiClusterNetwork API is not installed, scheduler may not perform as expected")
+	}
+
+	// All set up operations and checks must be performed before starting the manager since it is a blocking function
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")

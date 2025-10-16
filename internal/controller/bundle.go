@@ -12,7 +12,7 @@ type Bundle struct {
 	name                string
 	placementRequests   []metav1.LabelSelectorRequirement
 	resources           ResourceSet
-	externalConnections []string
+	externalConnections []ServicePortPair
 	clusterName         string
 }
 
