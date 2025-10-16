@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1023,7 +1024,7 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 
 	for _, resource := range bundeledResources {
 		// Ensure a namespace is defined for the resource unless the resource is not namespaced
-		nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding"}
+		nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding", "PersistentVolume"}
 		if resource.metadata.namespace == "" && !slices.Contains(nonNamespacedResources, resource.metadata.groupVersionKind.Kind) {
 			errorMessage := fmt.Sprintf("invalid manifest, no namespace specified for %s %s", resource.metadata.name, resource.metadata.groupVersionKind.Kind)
 			return workv1.ManifestWork{}, &MisconfiguredManifestError{errorMessage}
@@ -1062,7 +1063,12 @@ func (r *P2CodeSchedulingManifestReconciler) validateManifestWorkApplied(manifes
 	for _, manifestStatus := range manifestWork.Status.ResourceStatus.Manifests {
 		for _, condition := range manifestStatus.Conditions {
 			if (condition.Type == "Applied" && condition.Status == metav1.ConditionFalse) || (condition.Type == "Available" && condition.Status == metav1.ConditionFalse) {
-				return &ManifestWorkFailedError{condition.Message}
+				fmt.Println(condition.Message)
+				fmt.Println(isVolumeRelatedErrorMessage(condition.Message))
+				// If the error message references a failure creating a persistent volume ignore it since it has been validated that a manifestwork can wrap and successfully create a pv on a managed cluster
+				if !isVolumeRelatedErrorMessage(condition.Message) {
+					return &ManifestWorkFailedError{condition.Message}
+				}
 			}
 		}
 	}
@@ -1133,6 +1139,20 @@ func extractPodTemplateSpec(workload Resource) (*corev1.PodTemplateSpec, error) 
 	default:
 		return nil, fmt.Errorf("unable to extract the pod spec for workload %s of type %s", workload.metadata.name, workload.metadata.groupVersionKind.Kind)
 	}
+}
+
+func isVolumeRelatedErrorMessage(message string) bool {
+	// First example error message
+	// 'Failed to apply manifest: persistentvolumes "volume-name" is forbidden:
+	// User "system:serviceaccount:open-cluster-management-agent:klusterlet-work-sa"
+	// cannot update resource "persistentvolumes" in API group "" at the cluster scope'
+
+	// Second example error message
+	// Failed to apply manifest: PersistentVolumeClaim "clodagh-test" is invalid: spec: Forbidden: spec is immutable after creation except resources.requests for bound claims
+
+	r1 := regexp.MustCompile("Failed to apply manifest: persistentvolumes.* forbidden")
+	r2 := regexp.MustCompile("Failed to apply manifest: PersistentVolumeClaim .* is invalid: spec: Forbidden: spec is immutable after creation except resources.requests for bound claims")
+	return r1.MatchString(message) || r2.MatchString(message)
 }
 
 // SetupWithManager sets up the controller with the Manager.
