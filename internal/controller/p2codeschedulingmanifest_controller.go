@@ -669,10 +669,24 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 	// TODO analyse securityContextProfile under container and pod for later version
 
+	for _, pullSecret := range podSpec.ImagePullSecrets {
+		secretResource, _ := ancillaryResources.Find(pullSecret.Name, "Secret")
+		if secretResource != nil {
+			resources.Add(secretResource)
+		}
+	}
+
 	// Later could support other types and check for aws and azure types
 	// Could also include storage classes
 
 	for _, volume := range podSpec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			pvcResource, _ := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+			if pvcResource != nil {
+				resources.Add(pvcResource)
+			}
+		}
+
 		if volume.ConfigMap != nil {
 			cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
 			if err != nil {
