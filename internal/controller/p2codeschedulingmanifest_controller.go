@@ -192,18 +192,26 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			}
 
 			// Remove network links if needed here
-			connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+			isInstalled, err := utils.IsMultiClusterNetworkInstalled()
 			if err != nil {
-				log.Error(err, "Error occurred while retrieving network connections")
-				return ctrl.Result{}, err
+				log.Error(err, "Error occurred while checking if the MultiClusterNetwork resource is present")
+				return ctrl.Result{}, fmt.Errorf("%w", err)
 			}
 
-			filteredConnections := filterNetworkConnections(connections)
+			if isInstalled {
+				connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+				if err != nil {
+					log.Error(err, "Error occurred while retrieving network connections")
+					return ctrl.Result{}, err
+				}
 
-			err = r.deleteNetworkLinks(ctx, filteredConnections)
-			if err != nil {
-				log.Error(err, "Failed to clean up MultiClusterNetworkLinks associated with the instance before deleting")
-				return ctrl.Result{}, err
+				filteredConnections := filterNetworkConnections(connections)
+
+				err = r.deleteNetworkLinks(ctx, filteredConnections)
+				if err != nil {
+					log.Error(err, "Failed to clean up MultiClusterNetworkLinks associated with the instance before deleting")
+					return ctrl.Result{}, err
+				}
 			}
 
 			r.deleteBundles(p2CodeSchedulingManifest.Name)
@@ -825,27 +833,27 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 		}
 
 		resources.Add(svcResource)
-	} else {
-		// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
-		// Get a list of all services and check if the service selector matches the metadata labels		services := ancillaryResources.FilterByKind("Service")
-		podTemplateSpec, err := extractPodTemplateSpec(*workload)
-		if err != nil {
+	}
+
+	// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
+	// Get a list of all services and check if the service selector matches the metadata labels		services := ancillaryResources.FilterByKind("Service")
+	podTemplateSpec, err := extractPodTemplateSpec(*workload)
+	if err != nil {
+		return ResourceSet{}, fmt.Errorf("%w", err)
+	}
+
+	services := ancillaryResources.FilterByKind("Service")
+	for _, service := range services {
+		svc := &corev1.Service{}
+		if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
 			return ResourceSet{}, fmt.Errorf("%w", err)
 		}
 
-		services := ancillaryResources.FilterByKind("Service")
-		for _, service := range services {
-			svc := &corev1.Service{}
-			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, fmt.Errorf("%w", err)
-			}
+		for k, v := range svc.Spec.Selector {
+			value, ok := podTemplateSpec.Labels[k]
 
-			for k, v := range svc.Spec.Selector {
-				value, ok := podTemplateSpec.Labels[k]
-
-				if ok && value == v {
-					resources.Add(service)
-				}
+			if ok && value == v {
+				resources.Add(service)
 			}
 		}
 	}
@@ -1165,7 +1173,7 @@ func isVolumeRelatedErrorMessage(message string) bool {
 	// Failed to apply manifest: PersistentVolumeClaim "clodagh-test" is invalid: spec: Forbidden: spec is immutable after creation except resources.requests for bound claims
 
 	r1 := regexp.MustCompile("Failed to apply manifest: persistentvolumes.* forbidden")
-	r2 := regexp.MustCompile("Failed to apply manifest: PersistentVolumeClaim .* is invalid: spec: Forbidden: spec is immutable after creation except resources.requests for bound claims")
+	r2 := regexp.MustCompile("Failed to apply manifest: PersistentVolumeClaim .* is invalid: spec: Forbidden: spec is immutable after creation")
 	return r1.MatchString(message) || r2.MatchString(message)
 }
 
