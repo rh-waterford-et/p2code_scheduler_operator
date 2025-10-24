@@ -12,6 +12,7 @@ type Bundle struct {
 	name                string
 	placementRequests   []metav1.LabelSelectorRequirement
 	resources           ResourceSet
+	absentResources     AbsentResourceSet
 	externalConnections []ServicePortPair
 	clusterName         string
 }
@@ -84,7 +85,7 @@ func (r *P2CodeSchedulingManifestReconciler) buildBundle(p2CodeSchedulingManifes
 			bundle, err := r.getBundle(workload.metadata.name, p2CodeSchedulingManifest.Name)
 			if err != nil {
 				// TODO calculate workload ResourceRequests
-				workloadAncillaryResources, externalConnections, err := analyseWorkload(workload, ancillaryResources)
+				workloadAncillaryResources, missingDependentResources, externalConnections, err := analyseWorkload(workload, ancillaryResources)
 				if err != nil {
 					return fmt.Errorf("%w", err)
 				}
@@ -96,7 +97,7 @@ func (r *P2CodeSchedulingManifestReconciler) buildBundle(p2CodeSchedulingManifes
 				additionalPlacementRules := ExtractPlacementRules(workload.p2codeSchedulingAnnotations)
 				placementRules := slices.Concat(commonPlacementRules, additionalPlacementRules)
 
-				bundle = &Bundle{name: workload.metadata.name, placementRequests: placementRules, resources: bundleResources, externalConnections: externalConnections}
+				bundle = &Bundle{name: workload.metadata.name, placementRequests: placementRules, resources: bundleResources, absentResources: missingDependentResources, externalConnections: externalConnections}
 				r.addBundle(bundle, p2CodeSchedulingManifest.Name)
 			}
 		}
