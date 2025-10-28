@@ -135,7 +135,5 @@ func (absentResourceSet *AbsentResourceSet) Register(resourceName string, resour
 }
 
 func (absentResourceSet *AbsentResourceSet) Merge(rs *AbsentResourceSet) {
-	for _, resource := range *rs {
-		*absentResourceSet = append(*absentResourceSet, resource)
-	}
+	*absentResourceSet = append(*absentResourceSet, *rs...)
 }
