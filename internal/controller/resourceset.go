@@ -8,6 +8,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
+type BasicResourceInfo struct {
+	name string
+	kind string
+}
+
 type ManifestMetadata struct {
 	name             string
 	namespace        string
@@ -22,6 +27,7 @@ type Resource struct {
 }
 
 type ResourceSet []*Resource
+type AbsentResourceSet []*BasicResourceInfo
 
 func (r Resource) IsWorkload() bool {
 	group := r.metadata.groupVersionKind.Group
@@ -122,4 +128,12 @@ func bulkConvertToResourceSet(manifests []runtime.RawExtension) (ResourceSet, er
 		resources.Add(&Resource{metadata: metadata, manifest: manifest})
 	}
 	return resources, nil
+}
+
+func (absentResourceSet *AbsentResourceSet) Register(resourceName string, resourceKind string) {
+	*absentResourceSet = append(*absentResourceSet, &BasicResourceInfo{name: resourceName, kind: resourceKind})
+}
+
+func (absentResourceSet *AbsentResourceSet) Merge(rs *AbsentResourceSet) {
+	*absentResourceSet = append(*absentResourceSet, *rs...)
 }

@@ -357,8 +357,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	} else {
 		err := r.buildBundle(p2CodeSchedulingManifest)
 		var misconfiguredManifestErr *MisconfiguredManifestError
-		var resourceNotFoundErr *ResourceNotFoundError
-		if errors.As(err, &misconfiguredManifestErr) || errors.As(err, &resourceNotFoundErr) {
+		// nolint:gocritic
+		if errors.As(err, &misconfiguredManifestErr) {
 			log.Error(err, configurationIssue)
 			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
 			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
@@ -431,8 +431,8 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
-	// All manifests specified within the P2CodeSchedulingManifest spec must be successfully placed
-	// If one manifest fails to be placed, no other manifest should run as the overall scheduling strategy failed
+	// All workloads specified within the P2CodeSchedulingManifest spec must be successfully placed
+	// If one workload fails to be placed, no other manifest should run as the overall scheduling strategy failed
 	// Since all manifests should be contained within a bundle and a suitable cluster has been found for each bundle the corresponding ManifestWorks can be generated
 	manifestWorks := []workv1.ManifestWork{}
 	placedManifests := 0
@@ -608,6 +608,29 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, nil
 	}
 
+	// Check for absent resources
+	// Ideally this scenario would be considered to be tentaively scheduled but for the purposes of the project mark as successful since some resources are preexisting on the clusters
+	absentResourcesWarning := ""
+	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+		for _, resource := range bundle.absentResources {
+			warning := fmt.Sprintf("Workload %s is missing a %s with the name %s.", bundle.name, strings.ToLower(resource.kind), resource.name)
+			absentResourcesWarning += warning
+		}
+	}
+
+	if absentResourcesWarning != "" {
+		message := fmt.Sprintf("All workloads have been successfully scheduled however some workloads referenced resources that could not be found : %s", absentResourcesWarning)
+		log.Info(message)
+
+		condition := metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: "UndefinedResources", Message: message}
+		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+			log.Error(err, updateFailure)
+			return ctrl.Result{}, fmt.Errorf("%w", err)
+		}
+
+		return ctrl.Result{}, nil
+	}
+
 	message := "All workloads have been successfully scheduled to a suitable cluster"
 	condition := metav1.Condition{Type: schedulingSuccessful, Status: metav1.ConditionTrue, Reason: schedulingSuccessful, Message: message}
 	if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
@@ -621,47 +644,51 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
+func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
+	resourcesNotFound := AbsentResourceSet{}
 
 	if workload.metadata.namespace == "" {
 		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.metadata.name)
-		return ResourceSet{}, []ServicePortPair{}, &MisconfiguredManifestError{errorMessage}
+		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, &MisconfiguredManifestError{errorMessage}
 	}
 
 	if workload.metadata.namespace != "default" {
 		namespaceResource, err := ancillaryResources.Find(workload.metadata.namespace, "Namespace")
 		if err != nil {
-			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 		}
 
 		resources.Add(namespaceResource)
 	}
 
-	rs, externalConnections, err := analysePodSpec(workload, ancillaryResources)
+	rs, absentResources, externalConnections, err := analysePodSpec(workload, ancillaryResources)
 	if err != nil {
-		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-	} else {
-		resources.Merge(&rs)
+		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
 
-	serviceResources, err := extractWorkloadServices(workload, ancillaryResources)
+	resources.Merge(&rs)
+	resourcesNotFound.Merge(&absentResources)
+
+	serviceResources, absentResources, err := extractWorkloadServices(workload, ancillaryResources)
 	if err != nil {
-		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-	} else {
-		resources.Merge(&serviceResources)
+		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
 
-	return resources, externalConnections, nil
+	resources.Merge(&serviceResources)
+	resourcesNotFound.Merge(&absentResources)
+
+	return resources, resourcesNotFound, externalConnections, nil
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
+func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
+	resourcesNotFound := AbsentResourceSet{}
 
 	podTemplateSpec, err := extractPodTemplateSpec(*workload)
 	if err != nil {
-		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
 	podSpec := podTemplateSpec.Spec
 
@@ -669,26 +696,44 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 
 	// TODO analyse securityContextProfile under container and pod for later version
 
+	for _, pullSecret := range podSpec.ImagePullSecrets {
+		secretResource, err := ancillaryResources.Find(pullSecret.Name, "Secret")
+		if err != nil {
+			resourcesNotFound.Register(pullSecret.Name, "Secret")
+		} else {
+			resources.Add(secretResource)
+		}
+	}
+
 	// Later could support other types and check for aws and azure types
 	// Could also include storage classes
 
 	for _, volume := range podSpec.Volumes {
+		if volume.PersistentVolumeClaim != nil {
+			pvcResource, err := ancillaryResources.Find(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+			if err != nil {
+				resourcesNotFound.Register(volume.PersistentVolumeClaim.ClaimName, "PersistentVolumeClaim")
+			} else {
+				resources.Add(pvcResource)
+			}
+		}
+
 		if volume.ConfigMap != nil {
 			cmResource, err := ancillaryResources.Find(volume.ConfigMap.Name, "ConfigMap")
 			if err != nil {
-				return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+				resourcesNotFound.Register(volume.ConfigMap.Name, "ConfigMap")
+			} else {
+				resources.Add(cmResource)
 			}
-
-			resources.Add(cmResource)
 		}
 
 		if volume.Secret != nil {
 			secretResource, err := ancillaryResources.Find(volume.Secret.SecretName, "Secret")
 			if err != nil {
-				return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+				resourcesNotFound.Register(volume.Secret.SecretName, "Secret")
+			} else {
+				resources.Add(secretResource)
 			}
-
-			resources.Add(secretResource)
 		}
 	}
 
@@ -697,38 +742,40 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	if podSpec.ServiceAccountName != "" {
 		saResource, err := ancillaryResources.Find(podSpec.ServiceAccountName, "ServiceAccount")
 		if err != nil {
-			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+			resourcesNotFound.Register(podSpec.ServiceAccountName, "ServiceAccount")
+		} else {
+			resources.Add(saResource)
+			// Check if any ClusterRoleBindings or RoleBindings use this service account as a subject
+			roleResources, missingResources, err := bundleRolesWithServiceAccount(*saResource, ancillaryResources)
+			if err != nil {
+				return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+			}
+
+			resources.Merge(&roleResources)
+			resourcesNotFound.Merge(&missingResources)
 		}
-
-		resources.Add(saResource)
-
-		// Check if any ClusterRoleBindings or RoleBindings use this service account as a subject
-		roleResources, err := bundleRolesWithServiceAccount(*saResource, ancillaryResources)
-		if err != nil {
-			return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-		}
-
-		resources.Merge(&roleResources)
 	}
 
 	// Examine Containers and InitContainers for ancillary resources
 	containers := podSpec.Containers
 	containers = append(containers, podSpec.InitContainers...)
 
-	rs, externalConnections, err := analyseContainers(containers, ancillaryResources)
+	rs, missingResources, externalConnections, err := analyseContainers(containers, ancillaryResources)
 	if err != nil {
-		return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
-	} else {
-		resources.Merge(&rs)
+		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
 
-	return resources, externalConnections, nil
+	resources.Merge(&rs)
+	resourcesNotFound.Merge(&missingResources)
+
+	return resources, resourcesNotFound, externalConnections, nil
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func analyseContainers(containers []corev1.Container, ancillaryResources ResourceSet) (ResourceSet, []ServicePortPair, error) {
+func analyseContainers(containers []corev1.Container, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 	externalConnections := []ServicePortPair{}
+	resourcesNotFound := AbsentResourceSet{}
 
 	// TODO examine resource requests for container
 	for _, container := range containers {
@@ -736,19 +783,19 @@ func analyseContainers(containers []corev1.Container, ancillaryResources Resourc
 			if envSource.ConfigMapRef != nil {
 				cmResource, err := ancillaryResources.Find(envSource.ConfigMapRef.Name, "ConfigMap")
 				if err != nil {
-					return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+					resourcesNotFound.Register(envSource.ConfigMapRef.Name, "ConfigMap")
+				} else {
+					resources.Add(cmResource)
 				}
-
-				resources.Add(cmResource)
 			}
 
 			if envSource.SecretRef != nil {
 				secretResource, err := ancillaryResources.Find(envSource.SecretRef.Name, "Secret")
 				if err != nil {
-					return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+					resourcesNotFound.Register(envSource.SecretRef.Name, "Secret")
+				} else {
+					resources.Add(secretResource)
 				}
-
-				resources.Add(secretResource)
 			}
 		}
 
@@ -758,19 +805,19 @@ func analyseContainers(containers []corev1.Container, ancillaryResources Resourc
 				if envVar.ValueFrom.ConfigMapKeyRef != nil {
 					cmResource, err := ancillaryResources.Find(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
 					if err != nil {
-						return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+						resourcesNotFound.Register(envVar.ValueFrom.ConfigMapKeyRef.Name, "ConfigMap")
+					} else {
+						resources.Add(cmResource)
 					}
-
-					resources.Add(cmResource)
 				}
 
 				if envVar.ValueFrom.SecretKeyRef != nil {
 					secretResource, err := ancillaryResources.Find(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
 					if err != nil {
-						return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+						resourcesNotFound.Register(envVar.ValueFrom.SecretKeyRef.Name, "Secret")
+					} else {
+						resources.Add(secretResource)
 					}
-
-					resources.Add(secretResource)
 				}
 			}
 
@@ -781,7 +828,7 @@ func analyseContainers(containers []corev1.Container, ancillaryResources Resourc
 				port, err := strconv.Atoi(strings.Split(envVar.Value, ":")[1])
 
 				if err != nil {
-					return ResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+					return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 				}
 
 				externalConnections = append(externalConnections, ServicePortPair{serviceName: serviceName, port: port})
@@ -789,11 +836,12 @@ func analyseContainers(containers []corev1.Container, ancillaryResources Resourc
 		}
 	}
 
-	return resources, externalConnections, nil
+	return resources, resourcesNotFound, externalConnections, nil
 }
 
-func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
 	resources := ResourceSet{}
+	resouresNotFound := AbsentResourceSet{}
 
 	// nolint:nestif
 	if workload.metadata.groupVersionKind.Kind == "StatefulSet" {
@@ -801,28 +849,29 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 		// volumeClaimTemplate is a list of pvc, not reference to pvc, look at storage classes
 		statefulset := &appsv1.StatefulSet{}
 		if err := json.Unmarshal(workload.manifest.Raw, statefulset); err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 		}
 
 		svcResource, err := ancillaryResources.Find(statefulset.Spec.ServiceName, "Service")
 		if err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			resouresNotFound.Register(statefulset.Spec.ServiceName, "Service")
+		} else {
+			resources.Add(svcResource)
 		}
 
-		resources.Add(svcResource)
 	} else {
 		// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
-		// Get a list of all services and check if the service selector matches the metadata labels		services := ancillaryResources.FilterByKind("Service")
+		// Get a list of all services and check if the service selector matches the metadata labels
 		podTemplateSpec, err := extractPodTemplateSpec(*workload)
 		if err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 		}
 
 		services := ancillaryResources.FilterByKind("Service")
 		for _, service := range services {
 			svc := &corev1.Service{}
 			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, fmt.Errorf("%w", err)
+				return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 			}
 
 			for k, v := range svc.Spec.Selector {
@@ -835,30 +884,31 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 		}
 	}
 
-	return resources, nil
+	return resources, resouresNotFound, nil
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func bundleRolesWithServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+func bundleRolesWithServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
 	resources := ResourceSet{}
+	resourcesNotFound := AbsentResourceSet{}
 	clusterRoleBindings := ancillaryResources.FilterByKind("ClusterRoleBinding")
 	roleBindings := ancillaryResources.FilterByKind("RoleBinding")
 
 	for _, clusterRoleBinding := range clusterRoleBindings {
 		binding := &rbacv1.ClusterRoleBinding{}
 		if err := json.Unmarshal(clusterRoleBinding.manifest.Raw, binding); err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 		}
 
 		for _, subject := range binding.Subjects {
 			if subject.Kind == "ServiceAccount" && subject.Name == serviceAccount.metadata.name && subject.Namespace == serviceAccount.metadata.namespace {
 				clusterRole, err := ancillaryResources.Find(binding.RoleRef.Name, binding.RoleRef.Kind)
 				if err != nil {
-					return ResourceSet{}, fmt.Errorf("%w", err)
+					resourcesNotFound.Register(binding.RoleRef.Name, binding.RoleRef.Kind)
+				} else {
+					resources.Add(clusterRole)
+					resources.Add(clusterRoleBinding)
 				}
-
-				resources.Add(clusterRole)
-				resources.Add(clusterRoleBinding)
 			}
 		}
 	}
@@ -866,23 +916,23 @@ func bundleRolesWithServiceAccount(serviceAccount Resource, ancillaryResources R
 	for _, roleBinding := range roleBindings {
 		binding := &rbacv1.RoleBinding{}
 		if err := json.Unmarshal(roleBinding.manifest.Raw, binding); err != nil {
-			return ResourceSet{}, fmt.Errorf("%w", err)
+			return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 		}
 
 		for _, subject := range binding.Subjects {
 			if subject.Kind == "ServiceAccount" && subject.Name == serviceAccount.metadata.name && subject.Namespace == serviceAccount.metadata.namespace {
 				role, err := ancillaryResources.Find(binding.RoleRef.Name, binding.RoleRef.Kind)
 				if err != nil {
-					return ResourceSet{}, fmt.Errorf("%w", err)
+					resourcesNotFound.Register(binding.RoleRef.Name, binding.RoleRef.Kind)
+				} else {
+					resources.Add(role)
+					resources.Add(roleBinding)
 				}
-
-				resources.Add(role)
-				resources.Add(roleBinding)
 			}
 		}
 	}
 
-	return resources, nil
+	return resources, resourcesNotFound, nil
 }
 
 func (r *P2CodeSchedulingManifestReconciler) getAssociatedPlacement(ctx context.Context, bundle *Bundle, p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) (*clusterv1beta1.Placement, error) {
@@ -1020,6 +1070,7 @@ func (r *P2CodeSchedulingManifestReconciler) extractFailedCondition(ctx context.
 
 func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources ResourceSet) (workv1.ManifestWork, error) {
 	manifestList := []workv1.Manifest{}
+	manifestConfigOptions := []workv1.ManifestConfigOption{}
 
 	for _, resource := range bundeledResources {
 		// Ensure a namespace is defined for the resource unless the resource is not namespaced
@@ -1033,6 +1084,27 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 			RawExtension: resource.manifest,
 		}
 		manifestList = append(manifestList, m)
+
+		// Create a ManifestConfigOption entry for any resource that is at risk of failing to apply because the OCM work agent attempts to update immutable or default fields when the user omits them
+		// For example the OCM work agent tries to update the volumeName field of a PersistentVolumeClaim
+		// Setting the update strategy of the resource to ServerSideApply overcomes this issue
+		resourcesToServerSideApply := []string{"PersistentVolumeClaim"}
+		if slices.Contains(resourcesToServerSideApply, resource.metadata.groupVersionKind.Kind) {
+			manifestConfigOption := workv1.ManifestConfigOption{
+				ResourceIdentifier: workv1.ResourceIdentifier{
+					Group: resource.metadata.groupVersionKind.Group,
+					// The resource field is a lower case string of the kind as a plural eg persistentvolumeclaims
+					Resource:  fmt.Sprintf("%ss", strings.ToLower(resource.metadata.groupVersionKind.Kind)),
+					Name:      resource.metadata.name,
+					Namespace: resource.metadata.namespace,
+				},
+				UpdateStrategy: &workv1.UpdateStrategy{
+					Type: "ServerSideApply",
+				},
+			}
+
+			manifestConfigOptions = append(manifestConfigOptions, manifestConfigOption)
+		}
 	}
 
 	manifestWork := workv1.ManifestWork{
@@ -1047,6 +1119,7 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 			Workload: workv1.ManifestsTemplate{
 				Manifests: manifestList,
 			},
+			ManifestConfigs: manifestConfigOptions,
 		},
 	}
 
