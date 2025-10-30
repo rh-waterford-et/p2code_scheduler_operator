@@ -342,7 +342,19 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 
 		// Extract resources from the P2CodeSchedulingManifest instance to populate the bundle
 		resources, err := bulkConvertToResourceSet(p2CodeSchedulingManifest.Spec.Manifests)
-		if err != nil {
+		var misconfiguredManifestErr *MisconfiguredManifestError
+		// nolint:gocritic
+		if errors.As(err, &misconfiguredManifestErr) {
+			log.Error(err, configurationIssue)
+			condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
+			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
+				log.Error(err, updateFailure)
+				return ctrl.Result{}, fmt.Errorf("%w", err)
+			}
+
+			// End reconciliation if the P2CodeSchedulingManifest is misconfigured
+			return ctrl.Result{}, nil
+		} else if err != nil {
 			log.Error(err, "Failed to process manifests to be scheduled")
 			return ctrl.Result{}, fmt.Errorf("%w", err)
 		}
@@ -445,24 +457,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		err = r.Get(ctx, types.NamespacedName{Name: manifestWorkName, Namespace: bundle.clusterName}, manifestWork)
 		// Define ManifestWork to be created if a ManifestWork doesnt exist for this bundle
 		if err != nil && apierrors.IsNotFound(err) {
-			newManifestWork, err := r.generateManifestWorkForBundle(manifestWorkName, bundle.clusterName, r.OwnerLabel, bundle.resources)
-			var misconfiguredManifestErr *MisconfiguredManifestError
-			if errors.As(err, &misconfiguredManifestErr) {
-				log.Error(err, configurationIssue)
-
-				condition := metav1.Condition{Type: misconfigured, Status: metav1.ConditionTrue, Reason: "MisconfiguredManifest", Message: utils.SentenceCase(err.Error())}
-				if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
-					log.Error(err, updateFailure)
-					return ctrl.Result{}, fmt.Errorf("%w", err)
-				}
-
-				// End reconciliation if the P2CodeSchedulingManifest is misconfigured
-				return ctrl.Result{}, nil
-			} else if err != nil {
-				log.Error(err, "Failed to generate ManifestWork")
-				return ctrl.Result{}, fmt.Errorf("%w", err)
-			}
-
+			newManifestWork := r.generateManifestWorkForBundle(manifestWorkName, bundle.clusterName, r.OwnerLabel, bundle.resources)
 			manifestWorks = append(manifestWorks, newManifestWork)
 		}
 	}
@@ -646,11 +641,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 	resourcesNotFound := AbsentResourceSet{}
-
-	if workload.metadata.namespace == "" {
-		errorMessage := fmt.Sprintf("no namespace defined for the workload %s", workload.metadata.name)
-		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, &MisconfiguredManifestError{errorMessage}
-	}
 
 	if workload.metadata.namespace != "default" {
 		namespaceResource, err := ancillaryResources.Find(workload.metadata.namespace, "Namespace")
@@ -1067,24 +1057,11 @@ func (r *P2CodeSchedulingManifestReconciler) extractFailedCondition(ctx context.
 	return &condition, nil
 }
 
-func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources ResourceSet) (workv1.ManifestWork, error) {
+func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name string, namespace string, ownerLabel string, bundeledResources ResourceSet) workv1.ManifestWork {
 	manifestList := []workv1.Manifest{}
 	manifestConfigOptions := []workv1.ManifestConfigOption{}
 
 	for _, resource := range bundeledResources {
-		// The scheduler is not responsible for managing volumes therefore persistent volume definitions are ignored
-		if resource.metadata.groupVersionKind.Kind == "PersistentVolume" {
-			errorMessage := fmt.Sprintf("%s is an invalid manifest, the P2CodeSchedulingManifest should not contain persistent volume definitions: ask the cluster admin to provision volumes and provide a storage class", resource.metadata.name)
-			return workv1.ManifestWork{}, &MisconfiguredManifestError{errorMessage}
-		}
-
-		// Ensure a namespace is defined for the resource unless the resource is not namespaced
-		nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding"}
-		if resource.metadata.namespace == "" && !slices.Contains(nonNamespacedResources, resource.metadata.groupVersionKind.Kind) {
-			errorMessage := fmt.Sprintf("invalid manifest, no namespace specified for %s %s", resource.metadata.name, resource.metadata.groupVersionKind.Kind)
-			return workv1.ManifestWork{}, &MisconfiguredManifestError{errorMessage}
-		}
-
 		m := workv1.Manifest{
 			RawExtension: resource.manifest,
 		}
@@ -1128,7 +1105,7 @@ func (r *P2CodeSchedulingManifestReconciler) generateManifestWorkForBundle(name 
 		},
 	}
 
-	return manifestWork, nil
+	return manifestWork
 }
 
 func (r *P2CodeSchedulingManifestReconciler) validateManifestWorkApplied(manifestWork workv1.ManifestWork) error {

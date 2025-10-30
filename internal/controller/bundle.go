@@ -39,8 +39,7 @@ func (r *P2CodeSchedulingManifestReconciler) buildBundle(p2CodeSchedulingManifes
 	// Convert p2CodeSchedulingManifest.Spec.Manifests to Resources for easier manipulation
 	resources, err := bulkConvertToResourceSet(p2CodeSchedulingManifest.Spec.Manifests)
 	if err != nil {
-		errorMessage := fmt.Errorf("failed to process manifests to be scheduled: %w", err)
-		return errorMessage
+		return err
 	}
 
 	commonPlacementRules := ExtractPlacementRules(p2CodeSchedulingManifest.Spec.GlobalAnnotations)

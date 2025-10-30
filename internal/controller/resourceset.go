@@ -2,6 +2,8 @@ package controller
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -109,6 +111,7 @@ func (resourceSet *ResourceSet) Categorise() (workloads ResourceSet, ancillaryRe
 		if resource.IsWorkload() {
 			workloads = append(workloads, resource)
 		} else {
+			// Add additional checks here - isCoreAncillary resource as fn name ???
 			ancillaryResources = append(ancillaryResources, resource)
 		}
 	}
@@ -116,6 +119,9 @@ func (resourceSet *ResourceSet) Categorise() (workloads ResourceSet, ancillaryRe
 	return
 }
 
+// Convert the manifest to a Resource for easier manipulation for objects that can be handled by the scheduler
+// The scheduler is responsible for the management of k8s workloads and any k8s workload ancillary resources
+// All other resources are considered cluster admin resources and beyond the scope of the scheduler
 func bulkConvertToResourceSet(manifests []runtime.RawExtension) (ResourceSet, error) {
 	resources := ResourceSet{}
 	for _, manifest := range manifests {
@@ -125,9 +131,48 @@ func bulkConvertToResourceSet(manifests []runtime.RawExtension) (ResourceSet, er
 		}
 
 		metadata := ManifestMetadata{name: object.GetName(), namespace: object.GetNamespace(), groupVersionKind: object.GetObjectKind().GroupVersionKind(), labels: object.GetLabels()}
-		resources.Add(&Resource{metadata: metadata, manifest: manifest})
+		// Analyse the manifest metadata to determine whether the scheduler should support this resource or not
+		if err := metadata.isValid(); err != nil {
+			return ResourceSet{}, err
+		} else {
+			resources.Add(&Resource{metadata: metadata, manifest: manifest})
+		}
 	}
 	return resources, nil
+}
+
+func (m ManifestMetadata) isValid() error {
+	if !m.isSupportedManifest() {
+		errorMessage := fmt.Sprintf("unsupported manifest: the cluster admin is responsible for managing %s resources", strings.ToLower(m.groupVersionKind.Kind))
+		return &MisconfiguredManifestError{errorMessage}
+	}
+
+	if !m.hasNamespace() {
+		errorMessage := fmt.Sprintf("invalid manifest: missing namespace for %s with the name %s", strings.ToLower(m.groupVersionKind.Kind), m.name)
+		return &MisconfiguredManifestError{errorMessage}
+	}
+
+	return nil
+}
+
+func (m ManifestMetadata) isSupportedManifest() bool {
+	exceptions := []string{"PersistentVolume"}
+	return isSupportedAPIGroup(m.groupVersionKind.Group) && !slices.Contains(exceptions, m.groupVersionKind.Kind)
+}
+
+func (m ManifestMetadata) hasNamespace() bool {
+	// Ensure a namespace is defined for the resource unless the resource is not namespaced
+	nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding", "Route"}
+	if m.namespace == "" && slices.Contains(nonNamespacedResources, m.groupVersionKind.Kind) {
+		return true
+	}
+
+	return m.namespace != ""
+}
+
+func isSupportedAPIGroup(apiGroup string) bool {
+	supportedAPIGroups := []string{"", "apps", "batch", "rbac.authorization.k8s.io", "authorization.openshift.io", "route.openshift.io"} // dont need the openshift auth group ???
+	return slices.Contains(supportedAPIGroups, apiGroup)
 }
 
 func (absentResourceSet *AbsentResourceSet) Register(resourceName string, resourceKind string) {
