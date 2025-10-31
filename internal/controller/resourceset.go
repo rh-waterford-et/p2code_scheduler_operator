@@ -171,7 +171,7 @@ func (m ManifestMetadata) hasNamespace() bool {
 }
 
 func isSupportedAPIGroup(apiGroup string) bool {
-	supportedAPIGroups := []string{"", "apps", "batch", "rbac.authorization.k8s.io", "authorization.openshift.io", "route.openshift.io"} // dont need the openshift auth group ???
+	supportedAPIGroups := []string{"", "apps", "batch", "rbac.authorization.k8s.io", "authorization.openshift.io", "route.openshift.io"}
 	return slices.Contains(supportedAPIGroups, apiGroup)
 }
 
