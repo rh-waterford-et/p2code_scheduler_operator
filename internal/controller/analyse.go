@@ -111,7 +111,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 		} else {
 			resources.Add(saResource)
 			// Check if any ClusterRoleBindings or RoleBindings use this service account as a subject
-			roleResources, missingResources, err := bundleRolesWithServiceAccount(*saResource, ancillaryResources)
+			roleResources, missingResources, err := analyseServiceAccount(*saResource, ancillaryResources)
 			if err != nil {
 				return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 			}
@@ -253,7 +253,7 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
-func bundleRolesWithServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
+func analyseServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
 	resources := ResourceSet{}
 	resourcesNotFound := AbsentResourceSet{}
 	clusterRoleBindings := ancillaryResources.FilterByKind("ClusterRoleBinding")

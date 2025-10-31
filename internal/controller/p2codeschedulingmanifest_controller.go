@@ -361,7 +361,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 
 	} else {
-		err := r.buildBundle(p2CodeSchedulingManifest)
+		err := r.buildBundles(p2CodeSchedulingManifest)
 		var misconfiguredManifestErr *MisconfiguredManifestError
 		// nolint:gocritic
 		if errors.As(err, &misconfiguredManifestErr) {
