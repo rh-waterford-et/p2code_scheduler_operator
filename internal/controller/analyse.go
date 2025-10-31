@@ -9,6 +9,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
@@ -223,28 +224,33 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 		} else {
 			resources.Add(svcResource)
 		}
+	}
 
-	} else {
-		// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
-		// Get a list of all services and check if the service selector matches the metadata labels
-		podTemplateSpec, err := extractPodTemplateSpec(*workload)
-		if err != nil {
+	// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
+	// Get a list of all services and check if the service selector matches the metadata labels
+	podTemplateSpec, err := extractPodTemplateSpec(*workload)
+	if err != nil {
+		return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
+	}
+
+	services := ancillaryResources.FilterByKind("Service")
+	for _, service := range services {
+		svc := &corev1.Service{}
+		if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
 			return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 		}
 
-		services := ancillaryResources.FilterByKind("Service")
-		for _, service := range services {
-			svc := &corev1.Service{}
-			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
-			}
+		for k, v := range svc.Spec.Selector {
+			value, ok := podTemplateSpec.Labels[k]
 
-			for k, v := range svc.Spec.Selector {
-				value, ok := podTemplateSpec.Labels[k]
-
-				if ok && value == v {
-					resources.Add(service)
+			if ok && value == v {
+				resources.Add(service)
+				r, err := findExternalNetworkAccessResources(*service, ancillaryResources)
+				if err != nil {
+					return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 				}
+
+				resources.Merge(&r)
 			}
 		}
 	}
@@ -298,6 +304,28 @@ func analyseServiceAccount(serviceAccount Resource, ancillaryResources ResourceS
 	}
 
 	return resources, resourcesNotFound, nil
+}
+
+func findExternalNetworkAccessResources(service Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+	networkResources := ResourceSet{}
+	ingresses := ancillaryResources.FilterByKind("Ingress")
+
+	for _, ingress := range ingresses {
+		ing := &networkingv1.Ingress{}
+		if err := json.Unmarshal(ingress.manifest.Raw, ing); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		for _, rule := range ing.Spec.Rules {
+			for _, path := range rule.IngressRuleValue.HTTP.Paths {
+				if path.Backend.Service != nil && path.Backend.Service.Name == service.metadata.name {
+					networkResources.Add(ingress)
+				}
+			}
+		}
+	}
+
+	return networkResources, nil
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
