@@ -531,19 +531,19 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Check that there is a network connection for each externalConnection
 	// If a network connection cannot be formed network connectivity between components cannot be guaranteed
 	// A network connection cannot be created if for example the P2CodeSchedulingManifest doesnt have a service corresponding to the name of the externalConnection
-	if expectedConnections != len(connections) {
-		message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
-		log.Info(message)
+	// if expectedConnections != len(connections) {
+	// 	message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
+	// 	log.Info(message)
 
-		condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
-		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
-			log.Error(err, updateFailure)
-			return ctrl.Result{}, err
-		}
+	// 	condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
+	// 	if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
+	// 		log.Error(err, updateFailure)
+	// 		return ctrl.Result{}, err
+	// 	}
 
-		// End reconciliation
-		return ctrl.Result{}, nil
-	}
+	// 	// End reconciliation
+	// 	return ctrl.Result{}, nil
+	// }
 
 	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
 	if len(connections) != 0 {
@@ -848,27 +848,27 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 			resources.Add(svcResource)
 		}
 
-	} else {
-		// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
-		// Get a list of all services and check if the service selector matches the metadata labels
-		podTemplateSpec, err := extractPodTemplateSpec(*workload)
-		if err != nil {
+	}
+
+	// Analyse the metadata of the pod template spec and extract all the labels applied to the pod
+	// Get a list of all services and check if the service selector matches the metadata labels
+	podTemplateSpec, err := extractPodTemplateSpec(*workload)
+	if err != nil {
+		return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
+	}
+
+	services := ancillaryResources.FilterByKind("Service")
+	for _, service := range services {
+		svc := &corev1.Service{}
+		if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
 			return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 		}
 
-		services := ancillaryResources.FilterByKind("Service")
-		for _, service := range services {
-			svc := &corev1.Service{}
-			if err := json.Unmarshal(service.manifest.Raw, svc); err != nil {
-				return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
-			}
+		for k, v := range svc.Spec.Selector {
+			value, ok := podTemplateSpec.Labels[k]
 
-			for k, v := range svc.Spec.Selector {
-				value, ok := podTemplateSpec.Labels[k]
-
-				if ok && value == v {
-					resources.Add(service)
-				}
+			if ok && value == v {
+				resources.Add(service)
 			}
 		}
 	}
