@@ -6,15 +6,19 @@ import (
 	"strconv"
 	"strings"
 
+	// K8s resources
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+
+	// OpenShift resources
+	routev1 "github.com/openshift/api/route/v1"
 )
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
-// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+// nolint:cyclop // not to concerned about cognitive complexity
 func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 	resourcesNotFound := AbsentResourceSet{}
@@ -36,7 +40,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 	resources.Merge(&rs)
 	resourcesNotFound.Merge(&absentResources)
 
-	serviceResources, absentResources, err := extractWorkloadServices(workload, ancillaryResources)
+	serviceResources, absentResources, err := extractNetworkResources(workload, ancillaryResources)
 	if err != nil {
 		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
 	}
@@ -47,7 +51,7 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 	return resources, resourcesNotFound, externalConnections, nil
 }
 
-// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+// nolint:cyclop // not to concerned about cognitive complexity
 func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 	resourcesNotFound := AbsentResourceSet{}
@@ -137,7 +141,7 @@ func analysePodSpec(workload *Resource, ancillaryResources ResourceSet) (Resourc
 	return resources, resourcesNotFound, externalConnections, nil
 }
 
-// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+// nolint:cyclop // not to concerned about cognitive complexity
 func analyseContainers(containers []corev1.Container, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, []ServicePortPair, error) {
 	resources := ResourceSet{}
 	externalConnections := []ServicePortPair{}
@@ -205,7 +209,8 @@ func analyseContainers(containers []corev1.Container, ancillaryResources Resourc
 	return resources, resourcesNotFound, externalConnections, nil
 }
 
-func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
+// nolint:cyclop // not to concerned about cognitive complexity
+func extractNetworkResources(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
 	resources := ResourceSet{}
 	resouresNotFound := AbsentResourceSet{}
 
@@ -258,7 +263,7 @@ func extractWorkloadServices(workload *Resource, ancillaryResources ResourceSet)
 	return resources, resouresNotFound, nil
 }
 
-// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+// nolint:cyclop // not to concerned about cognitive complexity
 func analyseServiceAccount(serviceAccount Resource, ancillaryResources ResourceSet) (ResourceSet, AbsentResourceSet, error) {
 	resources := ResourceSet{}
 	resourcesNotFound := AbsentResourceSet{}
@@ -306,9 +311,12 @@ func analyseServiceAccount(serviceAccount Resource, ancillaryResources ResourceS
 	return resources, resourcesNotFound, nil
 }
 
+// Group a service with any Ingress or Route resources that reference it
+// nolint:cyclop // not to concerned about cognitive complexity
 func findExternalNetworkAccessResources(service Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
 	networkResources := ResourceSet{}
 	ingresses := ancillaryResources.FilterByKind("Ingress")
+	routes := ancillaryResources.FilterByKind("Route")
 
 	for _, ingress := range ingresses {
 		ing := &networkingv1.Ingress{}
@@ -325,10 +333,21 @@ func findExternalNetworkAccessResources(service Resource, ancillaryResources Res
 		}
 	}
 
+	for _, route := range routes {
+		rt := &routev1.Route{}
+		if err := json.Unmarshal(route.manifest.Raw, rt); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		if rt.Spec.To.Kind == "Service" && rt.Spec.To.Name == service.metadata.name {
+			networkResources.Add(route)
+		}
+	}
+
 	return networkResources, nil
 }
 
-// nolint:cyclop // not to concerned about cognitive complexity (brainfreeze)
+// nolint:cyclop // not to concerned about cognitive complexity
 func extractPodTemplateSpec(workload Resource) (*corev1.PodTemplateSpec, error) {
 	switch kind := workload.metadata.groupVersionKind.Kind; kind {
 	case "Pod":
