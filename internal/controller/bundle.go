@@ -35,7 +35,7 @@ func (r *P2CodeSchedulingManifestReconciler) deleteBundles(ownerReference string
 }
 
 // nolint:cyclop // not to concenred about cognitive complexity (brainfreeze)
-func (r *P2CodeSchedulingManifestReconciler) buildBundle(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
+func (r *P2CodeSchedulingManifestReconciler) buildBundles(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) error {
 	// Convert p2CodeSchedulingManifest.Spec.Manifests to Resources for easier manipulation
 	resources, err := bulkConvertToResourceSet(p2CodeSchedulingManifest.Spec.Manifests)
 	if err != nil {

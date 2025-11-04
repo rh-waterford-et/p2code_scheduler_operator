@@ -162,7 +162,7 @@ func (m ManifestMetadata) isSupportedManifest() bool {
 
 func (m ManifestMetadata) hasNamespace() bool {
 	// Ensure a namespace is defined for the resource unless the resource is not namespaced
-	nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding", "Route"}
+	nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding"}
 	if m.namespace == "" && slices.Contains(nonNamespacedResources, m.groupVersionKind.Kind) {
 		return true
 	}
@@ -171,7 +171,7 @@ func (m ManifestMetadata) hasNamespace() bool {
 }
 
 func isSupportedAPIGroup(apiGroup string) bool {
-	supportedAPIGroups := []string{"", "apps", "batch", "rbac.authorization.k8s.io", "authorization.openshift.io", "route.openshift.io"}
+	supportedAPIGroups := []string{"", "apps", "batch", "rbac.authorization.k8s.io", "authorization.openshift.io", "route.openshift.io", "networking.k8s.io"}
 	return slices.Contains(supportedAPIGroups, apiGroup)
 }
 
