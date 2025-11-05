@@ -8,6 +8,7 @@ import (
 
 	// K8s resources
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -47,6 +48,13 @@ func analyseWorkload(workload *Resource, ancillaryResources ResourceSet) (Resour
 
 	resources.Merge(&serviceResources)
 	resourcesNotFound.Merge(&absentResources)
+
+	hpaResources, err := findHPADefinition(workload, ancillaryResources)
+	if err != nil {
+		return ResourceSet{}, AbsentResourceSet{}, []ServicePortPair{}, fmt.Errorf("%w", err)
+	}
+
+	resources.Merge(&hpaResources)
 
 	return resources, resourcesNotFound, externalConnections, nil
 }
@@ -345,6 +353,25 @@ func findExternalNetworkAccessResources(service Resource, ancillaryResources Res
 	}
 
 	return networkResources, nil
+}
+
+func findHPADefinition(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {
+	hpaResources := ResourceSet{}
+	horizontalPodAutoscalers := ancillaryResources.FilterByKind("HorizontalPodAutoscaler")
+
+	for _, horizontalPodAutoscaler := range horizontalPodAutoscalers {
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{}
+		if err := json.Unmarshal(horizontalPodAutoscaler.manifest.Raw, hpa); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		hpaTarget := hpa.Spec.ScaleTargetRef
+		if hpaTarget.Kind == workload.metadata.groupVersionKind.Kind && hpaTarget.Name == workload.metadata.name && hpaTarget.APIVersion == workload.metadata.groupVersionKind.GroupVersion().String() {
+			hpaResources.Add(horizontalPodAutoscaler)
+		}
+	}
+
+	return hpaResources, nil
 }
 
 // nolint:cyclop // not to concerned about cognitive complexity
