@@ -157,7 +157,7 @@ func (m ManifestMetadata) isValid() error {
 
 func (m ManifestMetadata) isSupportedManifest() bool {
 	exceptions := []string{"PersistentVolume"}
-	return isSupportedAPIGroup(m.groupVersionKind.Group) && !slices.Contains(exceptions, m.groupVersionKind.Kind)
+	return isSupportedAPIVersion(m.groupVersionKind) && !slices.Contains(exceptions, m.groupVersionKind.Kind)
 }
 
 func (m ManifestMetadata) hasNamespace() bool {
@@ -170,9 +170,9 @@ func (m ManifestMetadata) hasNamespace() bool {
 	return m.namespace != ""
 }
 
-func isSupportedAPIGroup(apiGroup string) bool {
-	supportedAPIGroups := []string{"", "apps", "batch", "rbac.authorization.k8s.io", "authorization.openshift.io", "route.openshift.io", "networking.k8s.io"}
-	return slices.Contains(supportedAPIGroups, apiGroup)
+func isSupportedAPIVersion(gvk schema.GroupVersionKind) bool {
+	supportedAPIVersions := []string{"v1", "apps/v1", "batch/v1", "rbac.authorization.k8s.io/v1", "authorization.openshift.io/v1", "route.openshift.io/v1", "networking.k8s.io/v1", "autoscaling/v2"}
+	return slices.Contains(supportedAPIVersions, gvk.GroupVersion().String())
 }
 
 func (absentResourceSet *AbsentResourceSet) Register(resourceName string, resourceKind string) {
