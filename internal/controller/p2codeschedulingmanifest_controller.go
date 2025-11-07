@@ -184,19 +184,27 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				return ctrl.Result{}, fmt.Errorf("%w", err)
 			}
 
-			// Remove network links if needed here
-			connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+			// Remove network links if the MultiClusterNetwork resource is installed
+			isInstalled, err := utils.IsMultiClusterNetworkInstalled()
 			if err != nil {
-				log.Error(err, "Error occurred while retrieving network connections")
-				return ctrl.Result{}, err
+				log.Error(err, "Error occurred while checking if the MultiClusterNetwork resource is present")
+				return ctrl.Result{}, fmt.Errorf("%w", err)
 			}
 
-			filteredConnections := filterNetworkConnections(connections)
+			if isInstalled {
+				connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
+				if err != nil {
+					log.Error(err, "Error occurred while retrieving network connections")
+					return ctrl.Result{}, err
+				}
 
-			err = r.deleteNetworkLinks(ctx, filteredConnections)
-			if err != nil {
-				log.Error(err, "Failed to clean up MultiClusterNetworkLinks associated with the instance before deleting")
-				return ctrl.Result{}, err
+				filteredConnections := filterNetworkConnections(connections)
+
+				err = r.deleteNetworkLinks(ctx, filteredConnections)
+				if err != nil {
+					log.Error(err, "Failed to clean up MultiClusterNetworkLinks associated with the instance before deleting")
+					return ctrl.Result{}, err
+				}
 			}
 
 			r.deleteBundles(p2CodeSchedulingManifest.Name)
