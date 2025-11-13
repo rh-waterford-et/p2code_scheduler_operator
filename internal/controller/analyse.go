@@ -3,8 +3,11 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	// K8s resources
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +19,9 @@ import (
 
 	// OpenShift resources
 	routev1 "github.com/openshift/api/route/v1"
+
+	// Other resources
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 )
 
 // TODO might as well analyse the resource requests in here when already extracted add a field for resource requests cpu etc to the bundle
@@ -258,7 +264,17 @@ func extractNetworkResources(workload *Resource, ancillaryResources ResourceSet)
 
 			if ok && value == v {
 				resources.Add(service)
+
+				// Find any route or ingress resources associated with this service
 				r, err := findExternalNetworkAccessResources(*service, ancillaryResources)
+				if err != nil {
+					return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
+				}
+
+				resources.Merge(&r)
+
+				// Identify any ServiceMonitor resource that scrapes metrics from this service
+				r, err = findServiceMonitorResources(k, v, ancillaryResources)
 				if err != nil {
 					return ResourceSet{}, AbsentResourceSet{}, fmt.Errorf("%w", err)
 				}
@@ -353,6 +369,32 @@ func findExternalNetworkAccessResources(service Resource, ancillaryResources Res
 	}
 
 	return networkResources, nil
+}
+
+func findServiceMonitorResources(key string, value string, ancillaryResources ResourceSet) (ResourceSet, error) {
+	monitorResources := ResourceSet{}
+	serviceMonitors := ancillaryResources.FilterByKind("ServiceMonitor")
+
+	for _, serviceMonitor := range serviceMonitors {
+		sm := &monitoringv1.ServiceMonitor{}
+		if err := json.Unmarshal(serviceMonitor.manifest.Raw, sm); err != nil {
+			return ResourceSet{}, fmt.Errorf("%w", err)
+		}
+
+		for k, v := range sm.Spec.Selector.MatchLabels {
+			if k == key && v == value {
+				monitorResources.Add(serviceMonitor)
+			}
+		}
+
+		for _, expression := range sm.Spec.Selector.MatchExpressions {
+			if expression.Operator == metav1.LabelSelectorOpIn && expression.Key == key && slices.Contains(expression.Values, value) {
+				monitorResources.Add(serviceMonitor)
+			}
+		}
+	}
+
+	return monitorResources, nil
 }
 
 func findHPADefinition(workload *Resource, ancillaryResources ResourceSet) (ResourceSet, error) {

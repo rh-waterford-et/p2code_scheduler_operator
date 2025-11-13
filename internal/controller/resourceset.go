@@ -28,6 +28,12 @@ type Resource struct {
 	manifest                    runtime.RawExtension
 }
 
+type SupportedAPIGroup struct {
+	apiVersion       string
+	allowedResources []string
+	blockedResources []string
+}
+
 type ResourceSet []*Resource
 type AbsentResourceSet []*BasicResourceInfo
 
@@ -142,7 +148,7 @@ func bulkConvertToResourceSet(manifests []runtime.RawExtension) (ResourceSet, er
 }
 
 func (m ManifestMetadata) isValid() error {
-	if !m.isSupportedManifest() {
+	if !m.isSupportedResource() {
 		errorMessage := fmt.Sprintf("unsupported manifest: the cluster admin is responsible for managing %s resources", strings.ToLower(m.groupVersionKind.Kind))
 		return &MisconfiguredManifestError{errorMessage}
 	}
@@ -155,11 +161,6 @@ func (m ManifestMetadata) isValid() error {
 	return nil
 }
 
-func (m ManifestMetadata) isSupportedManifest() bool {
-	exceptions := []string{"PersistentVolume"}
-	return isSupportedAPIVersion(m.groupVersionKind) && !slices.Contains(exceptions, m.groupVersionKind.Kind)
-}
-
 func (m ManifestMetadata) hasNamespace() bool {
 	// Ensure a namespace is defined for the resource unless the resource is not namespaced
 	nonNamespacedResources := []string{"Namespace", "ClusterRole", "ClusterRoleBinding"}
@@ -170,9 +171,53 @@ func (m ManifestMetadata) hasNamespace() bool {
 	return m.namespace != ""
 }
 
-func isSupportedAPIVersion(gvk schema.GroupVersionKind) bool {
-	supportedAPIVersions := []string{"v1", "apps/v1", "batch/v1", "rbac.authorization.k8s.io/v1", "authorization.openshift.io/v1", "route.openshift.io/v1", "networking.k8s.io/v1", "autoscaling/v2"}
-	return slices.Contains(supportedAPIVersions, gvk.GroupVersion().String())
+func (m ManifestMetadata) isSupportedResource() bool {
+	coreBlockedResources := []string{"PersistentVolume"}
+	monitoringAllowedResources := []string{"ServiceMonitor"}
+
+	supportedAPIGroups := []SupportedAPIGroup{
+		{apiVersion: "v1", blockedResources: coreBlockedResources},
+		{apiVersion: "apps/v1"},
+		{apiVersion: "batch/v1"},
+		{apiVersion: "rbac.authorization.k8s.io/v1"},
+		{apiVersion: "authorization.openshift.io/v1"},
+		{apiVersion: "route.openshift.io/v1"},
+		{apiVersion: "networking.k8s.io/v1"},
+		{apiVersion: "autoscaling/v2"},
+		{apiVersion: "monitoring.coreos.com/v1", allowedResources: monitoringAllowedResources},
+	}
+
+	gvk := m.groupVersionKind
+	manifestAPIVersion := gvk.GroupVersion().String()
+
+	for _, supportedAPIGroup := range supportedAPIGroups {
+		if supportedAPIGroup.apiVersion == manifestAPIVersion && supportedAPIGroup.isResourceAllowed(gvk) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (supportedAPIGroup SupportedAPIGroup) isResourceAllowed(gvk schema.GroupVersionKind) bool {
+	// If no allowed or blocked resources explicitly defined assume all resources in that API group are allowed
+	if len(supportedAPIGroup.allowedResources) == 0 && len(supportedAPIGroup.blockedResources) == 0 {
+		return true
+	}
+
+	if len(supportedAPIGroup.allowedResources) > 0 && len(supportedAPIGroup.blockedResources) > 0 {
+		return slices.Contains(supportedAPIGroup.allowedResources, gvk.Kind) || !slices.Contains(supportedAPIGroup.blockedResources, gvk.Kind)
+	}
+
+	if len(supportedAPIGroup.allowedResources) > 0 && len(supportedAPIGroup.blockedResources) == 0 {
+		return slices.Contains(supportedAPIGroup.allowedResources, gvk.Kind)
+	}
+
+	if len(supportedAPIGroup.allowedResources) == 0 && len(supportedAPIGroup.blockedResources) > 0 {
+		return !slices.Contains(supportedAPIGroup.blockedResources, gvk.Kind)
+	}
+
+	return false
 }
 
 func (absentResourceSet *AbsentResourceSet) Register(resourceName string, resourceKind string) {
