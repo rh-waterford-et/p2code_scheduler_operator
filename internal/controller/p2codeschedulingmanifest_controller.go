@@ -519,32 +519,10 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	schedulingDecisions := r.getSchedulingDecisions(p2CodeSchedulingManifest)
 	log.Info("All workloads have been successfully scheduled to a suitable cluster, checking if network links need to be created")
 
-	expectedConnections := 0
-	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
-		expectedConnections += len(bundle.externalConnections)
-	}
-
 	connections, err := r.getAllNetworkConnections(p2CodeSchedulingManifest)
 	if err != nil {
 		log.Error(err, "Error occurred while retrieving network connections")
 		return ctrl.Result{}, err
-	}
-
-	// Check that there is a network connection for each externalConnection
-	// If a network connection cannot be formed network connectivity between components cannot be guaranteed
-	// A network connection cannot be created if for example the P2CodeSchedulingManifest doesnt have a service corresponding to the name of the externalConnection
-	if expectedConnections != len(connections) {
-		message := "All workloads have been successfully scheduled, however network connectivity between components cannot be guaranteed"
-		log.Info(message)
-
-		condition := metav1.Condition{Type: unreliablyScheduled, Status: metav1.ConditionTrue, Reason: unreliablyScheduled, Message: message}
-		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, schedulingDecisions); err != nil {
-			log.Error(err, updateFailure)
-			return ctrl.Result{}, err
-		}
-
-		// End reconciliation
-		return ctrl.Result{}, nil
 	}
 
 	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
