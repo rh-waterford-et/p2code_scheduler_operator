@@ -303,7 +303,10 @@ func analyseServiceAccount(serviceAccount Resource, ancillaryResources ResourceS
 		for _, subject := range binding.Subjects {
 			if subject.Kind == "ServiceAccount" && subject.Name == serviceAccount.metadata.name && subject.Namespace == serviceAccount.metadata.namespace {
 				clusterRole, err := ancillaryResources.Find(binding.RoleRef.Name, binding.RoleRef.Kind)
-				if err != nil {
+				// nolint:gocritic
+				if strings.HasPrefix(binding.RoleRef.Name, "system:") {
+					resources.Add(clusterRoleBinding)
+				} else if err != nil {
 					resourcesNotFound.Register(binding.RoleRef.Name, binding.RoleRef.Kind)
 				} else {
 					resources.Add(clusterRole)
@@ -322,7 +325,10 @@ func analyseServiceAccount(serviceAccount Resource, ancillaryResources ResourceS
 		for _, subject := range binding.Subjects {
 			if subject.Kind == "ServiceAccount" && subject.Name == serviceAccount.metadata.name && subject.Namespace == serviceAccount.metadata.namespace {
 				role, err := ancillaryResources.Find(binding.RoleRef.Name, binding.RoleRef.Kind)
-				if err != nil {
+				// nolint:gocritic
+				if strings.HasPrefix(binding.RoleRef.Name, "system:") {
+					resources.Add(roleBinding)
+				} else if err != nil {
 					resourcesNotFound.Register(binding.RoleRef.Name, binding.RoleRef.Kind)
 				} else {
 					resources.Add(role)
