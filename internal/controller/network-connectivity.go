@@ -6,7 +6,6 @@ import (
 	"regexp"
 
 	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
-	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,14 +30,14 @@ type NetworkConnection struct {
 	target  Location
 }
 
-func (r *P2CodeSchedulingManifestReconciler) getAllNetworkConnections(p2CodeSchedulingManifest *schedulingv1alpha1.P2CodeSchedulingManifest) ([]NetworkConnection, error) {
+func (r *P2CodeSchedulingManifestReconciler) getNetworkConnections(bundles BundleList) ([]NetworkConnection, error) {
 	networkConnections := []NetworkConnection{}
-	for _, bundle := range r.Bundles[p2CodeSchedulingManifest.Name] {
+	for _, bundle := range bundles {
 		if len(bundle.externalConnections) < 1 {
 			continue
 		}
 
-		connections, err := bundle.buildNetworkConnection(r.Bundles[p2CodeSchedulingManifest.Name])
+		connections, err := bundle.buildNetworkConnection(bundles)
 		if err != nil {
 			return nil, err
 		}
@@ -46,7 +45,7 @@ func (r *P2CodeSchedulingManifestReconciler) getAllNetworkConnections(p2CodeSche
 		networkConnections = append(networkConnections, connections...)
 	}
 
-	return networkConnections, nil
+	return filterNetworkConnections(networkConnections), nil
 }
 
 func (r *P2CodeSchedulingManifestReconciler) registerNetworkLinks(ctx context.Context, networkConnections []NetworkConnection) error {
@@ -143,7 +142,7 @@ func (r *P2CodeSchedulingManifestReconciler) fetchMultiClusterNetwork(ctx contex
 	return multiClusterNetwork, nil
 }
 
-func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection, error) {
+func (b *Bundle) buildNetworkConnection(bundles BundleList) ([]NetworkConnection, error) {
 	// Ensure the bundle contains a single workload resource
 	workloads, _ := b.resources.Categorise()
 	if len(workloads) > 1 {
@@ -153,7 +152,7 @@ func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection,
 	// Extract the target details from Bundle b
 	// b is the target since the service it depends on is elsewhere
 	// Below the source of this dependent service is identified
-	targetLocation := Location{cluster: b.clusterName, namespace: workloads[0].metadata.namespace}
+	targetLocation := Location{cluster: b.schedulingDetails.clusterName, namespace: workloads[0].metadata.namespace}
 
 	networkConnections := []NetworkConnection{}
 	for _, connection := range b.externalConnections {
@@ -164,7 +163,7 @@ func (b *Bundle) buildNetworkConnection(bundles []*Bundle) ([]NetworkConnection,
 			}
 
 			if service := bundle.getExternalService(connection.serviceName); service != nil {
-				nc := NetworkConnection{service: connection, source: Location{cluster: bundle.clusterName, namespace: service.metadata.namespace}, target: targetLocation}
+				nc := NetworkConnection{service: connection, source: Location{cluster: bundle.schedulingDetails.clusterName, namespace: service.metadata.namespace}, target: targetLocation}
 				networkConnections = append(networkConnections, nc)
 			}
 		}
@@ -182,7 +181,7 @@ func (b *Bundle) getExternalService(connectionName string) *Resource {
 	return nil
 }
 
-// Filter the network connections and return a list of connections that must be enabled through the MultiClusterNetwork feature
+// Helper function to filter the network connections and return a list of connections that must be enabled through the MultiClusterNetwork feature
 func filterNetworkConnections(networkConnections []NetworkConnection) []NetworkConnection {
 	connections := []NetworkConnection{}
 	for _, nc := range networkConnections {
