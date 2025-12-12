@@ -15,7 +15,7 @@ spec:
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .status.conditions[-1].type
+    - jsonPath: .status.state
       name: State
       type: string
     name: v1alpha1
@@ -164,9 +164,14 @@ spec:
                   - workloadName
                   type: object
                 type: array
+              state:
+                description: State of the P2CodeSchedulingManifest indicating if scheduling
+                  is in progress, failed or successful
+                type: string
             required:
             - conditions
             - decisions
+            - state
             type: object
         type: object
     served: true

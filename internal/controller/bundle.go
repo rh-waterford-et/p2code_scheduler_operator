@@ -33,12 +33,12 @@ func (b *Bundle) update(placementRequests []metav1.LabelSelectorRequirement, res
 	b.schedulingDetails = SchedulingDetails{}
 }
 
-func (bl BundleList) addBundle(bundle *Bundle) {
-	bl = append(bl, bundle)
+func (bl *BundleList) addBundle(bundle *Bundle) {
+	*bl = append(*bl, bundle)
 }
 
-func (bl BundleList) getBundle(bundleName string) *Bundle {
-	for _, bundle := range bl {
+func (bl *BundleList) getBundle(bundleName string) *Bundle {
+	for _, bundle := range *bl {
 		if bundle.name == bundleName {
 			return bundle
 		}
@@ -46,9 +46,9 @@ func (bl BundleList) getBundle(bundleName string) *Bundle {
 	return nil
 }
 
-func (bl BundleList) listBundles() []string {
+func (bl *BundleList) listBundles() []string {
 	bundleNames := []string{}
-	for _, bundle := range bl {
+	for _, bundle := range *bl {
 		bundleNames = append(bundleNames, bundle.name)
 	}
 

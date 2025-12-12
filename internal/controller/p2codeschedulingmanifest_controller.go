@@ -39,7 +39,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	networkoperatorv1alpha1 "github.com/rh-waterford-et/ac3_networkoperator/api/v1alpha1"
 	schedulingv1alpha1 "github.com/rh-waterford-et/p2code-scheduler-operator/api/v1alpha1"
 	"github.com/rh-waterford-et/p2code-scheduler-operator/utils"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
@@ -49,21 +48,6 @@ import (
 const finalizer = "scheduling.p2code.eu/finalizer"
 const ownershipLabel = "scheduling.p2code.eu/owner"
 const P2CodeSchedulerNamespace = "p2code-scheduler-system"
-
-const fetchFailure = "Failed to fetch P2CodeSchedulingManifest"
-const updateFailure = "Failed to update P2CodeSchedulingManifest status"
-const configurationIssue = "There is a configuration issue in the P2CodeSchedulingManifest instance"
-
-// Status conditions corresponding to the state of the P2CodeSchedulingManifest
-const (
-	schedulingInProgress = "SchedulingInProgress"
-	schedulingSuccessful = "SchedulingSuccessful"
-	unreliablyScheduled  = "ScheduledWithUnreliableConnectivity"
-	schedulingFailed     = "SchedulingFailed"
-	tentativelyScheduled = "TentativelyScheduled"
-	finalizing           = "Finalizing"
-	misconfigured        = "Misconfigured"
-)
 
 // P2CodeSchedulingManifestReconciler reconciles a P2CodeSchedulingManifest object
 type P2CodeSchedulingManifestReconciler struct {
@@ -100,6 +84,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	log := log.FromContext(ctx)
 
 	bundles := BundleList{}
+	if r.Bundles == nil {
+		r.Bundles = make(map[string]BundleList)
+	}
 
 	// Get P2CodeSchedulingManifest instance
 	p2CodeSchedulingManifest := &schedulingv1alpha1.P2CodeSchedulingManifest{}
@@ -116,10 +103,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	// Use the name of the P2CodeSchedulingManifest instance to create an ownership label to be applied to resources it manages
 	r.OwnerLabel = utils.TruncateNameIfNeeded(p2CodeSchedulingManifest.Name)
 
-	// If the status is empty set the status as scheduling in progress
-	if len(p2CodeSchedulingManifest.Status.Conditions) == 0 {
-		condition := metav1.Condition{Type: schedulingInProgress, Status: metav1.ConditionTrue, Reason: schedulingInProgress, Message: "Analysing scheduling requirements"}
-		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
+	if condition := getInProgressState(ctx, p2CodeSchedulingManifest); condition != nil {
+		log.Info("Updating in progress state")
+		if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, *condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 			log.Error(err, updateFailure)
 			return ctrl.Result{}, fmt.Errorf("%w", err)
 		}
@@ -170,7 +156,7 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			message := "Performing finalizing operations before deleting P2CodeSchedulingManifest"
 			log.Info(message)
 
-			condition := metav1.Condition{Type: finalizing, Status: metav1.ConditionTrue, Reason: "Finalizing", Message: message}
+			condition := metav1.Condition{Type: finalizing, Status: metav1.ConditionTrue, Reason: finalizing, Message: message}
 			if err := r.UpdateStatus(ctx, p2CodeSchedulingManifest, condition, []schedulingv1alpha1.SchedulingDecision{}); err != nil {
 				log.Error(err, updateFailure)
 				return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -455,19 +441,34 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	newBundles := bundles.listBundles()
 	for _, bundle := range existingBundles {
 		if !slices.Contains(newBundles, bundle.name) && bundle.schedulingDetails.resourceName != "" {
+			message := fmt.Sprintf("Deleting scheduling resources with the name %s", bundle.schedulingDetails.resourceName)
+			log.Info(message)
+
 			placement := &clusterv1beta1.Placement{}
 			err := r.Get(ctx, types.NamespacedName{Name: bundle.schedulingDetails.resourceName, Namespace: P2CodeSchedulerNamespace}, placement)
 			if err != nil {
+				warningMessage := fmt.Sprintf("Failed to fetch placement with the name %s, likely it has already been deleted", bundle.schedulingDetails.resourceName)
+				log.Info(warningMessage)
+			} else {
 				if err := r.Delete(ctx, placement); err != nil {
+					errorMessage := fmt.Sprintf("Failed to delete placement with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", bundle.schedulingDetails.resourceName)
+					log.Error(err, errorMessage)
 					return ctrl.Result{}, fmt.Errorf("%w", err)
 				}
 			}
 
-			manifestWork := &workv1.ManifestWork{}
-			err = r.Get(ctx, types.NamespacedName{Name: bundle.schedulingDetails.resourceName, Namespace: P2CodeSchedulerNamespace}, manifestWork)
-			if err != nil {
-				if err := r.Delete(ctx, manifestWork); err != nil {
-					return ctrl.Result{}, fmt.Errorf("%w", err)
+			if bundle.schedulingDetails.clusterName != "" {
+				manifestWork := &workv1.ManifestWork{}
+				err = r.Get(ctx, types.NamespacedName{Name: bundle.schedulingDetails.resourceName, Namespace: bundle.schedulingDetails.clusterName}, manifestWork)
+				if err != nil {
+					warningMessage := fmt.Sprintf("Failed to fetch manifest work with the name %s, likely it has already been deleted", bundle.schedulingDetails.resourceName)
+					log.Info(warningMessage)
+				} else {
+					if err := r.Delete(ctx, manifestWork); err != nil {
+						errorMessage := fmt.Sprintf("Failed to delete manifest work with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", bundle.schedulingDetails.resourceName)
+						log.Error(err, errorMessage)
+						return ctrl.Result{}, fmt.Errorf("%w", err)
+					}
 				}
 			}
 		}
@@ -492,8 +493,9 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 				return ctrl.Result{}, fmt.Errorf("%w", err)
 			}
 		} else {
-			// Update the existing manifestwork to cater for new resources that might have been added or a change to the target cluster for the bundle
-			manifestWork = &mw
+			// Update the existing manifestwork to cater for new resources that might have been added
+			// TODO or a change to the target cluster for the bundle
+			manifestWork.Spec = mw.Spec
 			if err = r.Update(ctx, manifestWork); err != nil {
 				log.Error(err, "Failed to update ManifestWork")
 				return ctrl.Result{}, fmt.Errorf("%w", err)
@@ -670,10 +672,25 @@ func (r *P2CodeSchedulingManifestReconciler) getAssociatedPlacement(ctx context.
 		return r.createPlacement(ctx, bundle.schedulingDetails.resourceName, clusterSet, bundle.schedulingDetails.placementRequests, p2CodeSchedulingManifest)
 	}
 
-	// Update the existing placement to account for any modifications to the scheudling requirements
-	placement.Spec.Predicates[0].RequiredClusterSelector.ClaimSelector.MatchExpressions = bundle.schedulingDetails.placementRequests
+	// Update the existing placement to account for any modifications to the scheduling requirements
+	placement.Spec.Predicates = []clusterv1beta1.ClusterPredicate{
+		{
+			RequiredClusterSelector: clusterv1beta1.ClusterSelector{
+				ClaimSelector: clusterv1beta1.ClusterClaimSelector{
+					MatchExpressions: bundle.schedulingDetails.placementRequests,
+				},
+			},
+		},
+	}
 
 	if err = r.Update(ctx, placement); err != nil {
+		return nil, fmt.Errorf("%w", err)
+	}
+
+	// Wait and refetch the placement after update
+	time.Sleep(15 * time.Second)
+
+	if err = r.Get(ctx, types.NamespacedName{Name: bundle.schedulingDetails.resourceName, Namespace: P2CodeSchedulerNamespace}, placement); err != nil {
 		return nil, fmt.Errorf("%w", err)
 	}
 
@@ -888,7 +905,6 @@ func (r *P2CodeSchedulingManifestReconciler) SetupWithManager(mgr ctrl.Manager) 
 		For(&schedulingv1alpha1.P2CodeSchedulingManifest{}).
 		Owns(&clusterv1beta1.Placement{}).
 		Owns(&workv1.ManifestWork{}).
-		Owns(&networkoperatorv1alpha1.MultiClusterNetwork{}).
 		// Don't trigger the reconciler if an update doesnt change the metadata.generation field of the object being reconciled
 		// This means that an update event for the object's status section will not trigger the reconciler
 		WithEventFilter(predicate.GenerationChangedPredicate{}).
