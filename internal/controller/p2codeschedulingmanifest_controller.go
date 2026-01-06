@@ -738,7 +738,7 @@ func (r *P2CodeSchedulingManifestReconciler) deleteManifestWork(ctx context.Cont
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, manifestWork)
 	if err == nil {
 		if err := r.Delete(ctx, manifestWork); err != nil {
-			return err
+			return fmt.Errorf("%w", err)
 		}
 	}
 
@@ -791,7 +791,7 @@ func (r *P2CodeSchedulingManifestReconciler) deletePlacement(ctx context.Context
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: P2CodeSchedulerNamespace}, placement)
 	if err == nil {
 		if err := r.Delete(ctx, placement); err != nil {
-			return err
+			return fmt.Errorf("%w", err)
 		}
 	}
 

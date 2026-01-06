@@ -46,15 +46,6 @@ func (bl *BundleList) getBundle(bundleName string) *Bundle {
 	return nil
 }
 
-func (bl *BundleList) listBundles() []string {
-	bundleNames := []string{}
-	for _, bundle := range *bl {
-		bundleNames = append(bundleNames, bundle.name)
-	}
-
-	return bundleNames
-}
-
 func (r *P2CodeSchedulingManifestReconciler) deleteBundles(ownerReference string) {
 	delete(r.Bundles, ownerReference)
 }
