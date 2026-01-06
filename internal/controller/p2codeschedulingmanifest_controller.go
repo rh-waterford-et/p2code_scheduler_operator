@@ -435,40 +435,42 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 	}
 
 	// Clean up scheduling related resources for old bundles
-	// Delete the placement and manifest work associated with a bundle that has been deleted since last reconciliation
-	// Not all bundles will have a placement, there is no placement if the target annotation is used
 	existingBundles := r.Bundles[p2CodeSchedulingManifest.Name]
-	newBundles := bundles.listBundles()
 	for _, bundle := range existingBundles {
-		if !slices.Contains(newBundles, bundle.name) && bundle.schedulingDetails.resourceName != "" {
-			message := fmt.Sprintf("Deleting scheduling resources with the name %s", bundle.schedulingDetails.resourceName)
-			log.Info(message)
+		newBundle := bundles.getBundle(bundle.name)
 
-			placement := &clusterv1beta1.Placement{}
-			err := r.Get(ctx, types.NamespacedName{Name: bundle.schedulingDetails.resourceName, Namespace: P2CodeSchedulerNamespace}, placement)
-			if err != nil {
-				warningMessage := fmt.Sprintf("Failed to fetch placement with the name %s, likely it has already been deleted", bundle.schedulingDetails.resourceName)
-				log.Info(warningMessage)
-			} else {
-				if err := r.Delete(ctx, placement); err != nil {
-					errorMessage := fmt.Sprintf("Failed to delete placement with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", bundle.schedulingDetails.resourceName)
+		// Delete the manifest work of a bundle where the target cluster has been updated since last reconciliation
+		if newBundle != nil {
+			previousBundle := existingBundles.getBundle(bundle.name)
+			if newBundle.schedulingDetails.clusterName != previousBundle.schedulingDetails.clusterName {
+				message := fmt.Sprintf("Deleting manifest work with the name %s as the target cluster as changed", bundle.schedulingDetails.resourceName)
+				log.Info(message)
+
+				if err := r.deleteManifestWork(ctx, previousBundle.schedulingDetails.resourceName, previousBundle.schedulingDetails.clusterName); err != nil {
+					errorMessage := fmt.Sprintf("Failed to delete manifest work with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", previousBundle.schedulingDetails.resourceName)
 					log.Error(err, errorMessage)
 					return ctrl.Result{}, fmt.Errorf("%w", err)
 				}
 			}
+		}
+
+		// Delete the placement and manifest work associated with a bundle that has been deleted since last reconciliation
+		// Not all bundles will have a placement, there is no placement if the target annotation is used
+		if newBundle == nil && bundle.schedulingDetails.resourceName != "" {
+			message := fmt.Sprintf("Deleting scheduling resources with the name %s", bundle.schedulingDetails.resourceName)
+			log.Info(message)
+
+			if err := r.deletePlacement(ctx, bundle.schedulingDetails.resourceName); err != nil {
+				errorMessage := fmt.Sprintf("Failed to delete placement with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", bundle.schedulingDetails.resourceName)
+				log.Error(err, errorMessage)
+				return ctrl.Result{}, fmt.Errorf("%w", err)
+			}
 
 			if bundle.schedulingDetails.clusterName != "" {
-				manifestWork := &workv1.ManifestWork{}
-				err = r.Get(ctx, types.NamespacedName{Name: bundle.schedulingDetails.resourceName, Namespace: bundle.schedulingDetails.clusterName}, manifestWork)
-				if err != nil {
-					warningMessage := fmt.Sprintf("Failed to fetch manifest work with the name %s, likely it has already been deleted", bundle.schedulingDetails.resourceName)
-					log.Info(warningMessage)
-				} else {
-					if err := r.Delete(ctx, manifestWork); err != nil {
-						errorMessage := fmt.Sprintf("Failed to delete manifest work with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", bundle.schedulingDetails.resourceName)
-						log.Error(err, errorMessage)
-						return ctrl.Result{}, fmt.Errorf("%w", err)
-					}
+				if err := r.deleteManifestWork(ctx, bundle.schedulingDetails.resourceName, bundle.schedulingDetails.clusterName); err != nil {
+					errorMessage := fmt.Sprintf("Failed to delete manifest work with the name %s as part of rescheduling due to update of the P2CodeSchedulingManifest", bundle.schedulingDetails.resourceName)
+					log.Error(err, errorMessage)
+					return ctrl.Result{}, fmt.Errorf("%w", err)
 				}
 			}
 		}
@@ -494,7 +496,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 			}
 		} else {
 			// Update the existing manifestwork to cater for new resources that might have been added
-			// TODO or a change to the target cluster for the bundle
 			manifestWork.Spec = mw.Spec
 			if err = r.Update(ctx, manifestWork); err != nil {
 				log.Error(err, "Failed to update ManifestWork")
@@ -544,7 +545,6 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 	}
 
-	oldBundles := r.Bundles[p2CodeSchedulingManifest.Name]
 	schedulingDecisions := r.getSchedulingDecisions(bundles)
 	log.Info("All workloads have been successfully scheduled to a suitable cluster, checking if network links need to be created")
 
@@ -555,14 +555,31 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		return ctrl.Result{}, fmt.Errorf("%w", err)
 	}
 
-	expectedConnections, err := r.getNetworkConnections(bundles)
+	// Clean up any old network connections
+	oldBundles := r.Bundles[p2CodeSchedulingManifest.Name]
+	oldConnections, err := r.getNetworkConnections(oldBundles)
+	if err != nil {
+		log.Error(err, "Error occurred while retrieving network connections")
+		return ctrl.Result{}, err
+	}
+
+	if len(oldConnections) != 0 && isInstalled {
+		log.Info("Deleting stale MultiClusterNetworkLinks")
+		err = r.deleteNetworkLinks(ctx, oldConnections)
+		if err != nil {
+			log.Error(err, "Failed to clean up stale MultiClusterNetworkLinks")
+			return ctrl.Result{}, err
+		}
+	}
+
+	connections, err := r.getNetworkConnections(bundles)
 	if err != nil {
 		log.Error(err, "Error occurred while retrieving network connections")
 		return ctrl.Result{}, err
 	}
 
 	// nolint:nestif // not to concerned about cognitive complexity (brainfreeze)
-	if len(expectedConnections) != 0 {
+	if len(connections) != 0 {
 		// Update the state informing the user that all workloads have been scheduled according to their requests
 		// Emphasise the fact that network connectivity between components cannot be guaranteed as it is not possible to create the necessary MultiClusterLinks without the resource being present
 		if !isInstalled {
@@ -580,28 +597,13 @@ func (r *P2CodeSchedulingManifestReconciler) Reconcile(ctx context.Context, req 
 		}
 
 		// Create MultiClusterLinks and update the MultiClusterNetwork resource
-		err = r.registerNetworkLinks(ctx, expectedConnections)
+		err = r.registerNetworkLinks(ctx, connections)
 		if err != nil {
 			log.Error(err, "Error occurred while registering network links")
 			return ctrl.Result{}, err
 		}
 
 		log.Info("Network links successfully registered")
-	}
-
-	// Clean up any old network connections
-	oldConnections, err := r.getNetworkConnections(oldBundles)
-	if err != nil {
-		log.Error(err, "Error occurred while retrieving network connections")
-		return ctrl.Result{}, err
-	}
-
-	if len(oldConnections) != 0 && isInstalled {
-		err = r.deleteNetworkLinks(ctx, oldConnections)
-		if err != nil {
-			log.Error(err, "Failed to clean up stale MultiClusterNetworkLinks")
-			return ctrl.Result{}, err
-		}
 	}
 
 	// Check for orphaned manifests
@@ -731,6 +733,18 @@ func (r *P2CodeSchedulingManifestReconciler) deleteOwnedManifestWorkList(ctx con
 	return nil
 }
 
+func (r *P2CodeSchedulingManifestReconciler) deleteManifestWork(ctx context.Context, name string, namespace string) error {
+	manifestWork := &workv1.ManifestWork{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, manifestWork)
+	if err == nil {
+		if err := r.Delete(ctx, manifestWork); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (r *P2CodeSchedulingManifestReconciler) createPlacement(ctx context.Context, placementName string, clusterSet string, clusterPredicates []metav1.LabelSelectorRequirement, controllerReference metav1.Object) (*clusterv1beta1.Placement, error) {
 	var numClusters int32 = 1
 
@@ -770,6 +784,18 @@ func (r *P2CodeSchedulingManifestReconciler) createPlacement(ctx context.Context
 	}
 
 	return placement, nil
+}
+
+func (r *P2CodeSchedulingManifestReconciler) deletePlacement(ctx context.Context, name string) error {
+	placement := &clusterv1beta1.Placement{}
+	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: P2CodeSchedulerNamespace}, placement)
+	if err == nil {
+		if err := r.Delete(ctx, placement); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (r *P2CodeSchedulingManifestReconciler) extractFailedCondition(ctx context.Context, placementCondition metav1.Condition, managedClusterSetName string) (*metav1.Condition, error) {
