@@ -21,7 +21,7 @@ Before you begin, ensure you have the following:
 
 ### Optional Dependencies
 
-- **AC3 Network Operator**: For multi-cluster network connectivity features
+- **AC3 MultiClusterNetwork Operator**: For multi-cluster network connectivity features. Installation guide available [here].(https://github.com/rh-waterford-et/ac3_networkoperator)
 - **Prometheus Operator**: For ServiceMonitor support
 
 ## Installation
@@ -54,53 +54,28 @@ clusteradm accept --clusters <cluster-name>
 
 ### Step 3: Create ManagedClusterSet
 
-Create a ManagedClusterSet and bind it to the operator namespace:
+User the ```clusteradm``` CLI to configure the managed cluster sets
 
-```bash
-# Create ManagedClusterSet
-cat <<EOF | kubectl apply -f -
-apiVersion: cluster.open-cluster-management.io/v1beta2
-kind: ManagedClusterSet
-metadata:
-  name: global
-spec:
-  clusterSelector:
-    selectorType: LabelSelector
-    labelSelector:
-      matchLabels: {}
-EOF
+- ```clusteradm create clusterset test```
+- ```clusteradm clusterset set test --clusters cluster1```
+- ```clusteradm clusterset set test --clusters cluster2```
 
-# Create namespace for operator
-kubectl create namespace p2code-scheduler-system
-
-# Bind ManagedClusterSet to namespace
-cat <<EOF | kubectl apply -f -
-apiVersion: cluster.open-cluster-management.io/v1beta2
-kind: ManagedClusterSetBinding
-metadata:
-  name: global
-  namespace: p2code-scheduler-system
-spec:
-  clusterSet: global
-EOF
-```
+Bind the clusterset to the p2code-schdeuler-system namespace
+- ```clusteradm clusterset bind test --namespace p2code-scheduler-system```
 
 ### Step 4: Label Your Managed Clusters
 
-Label your clusters with attributes for filtering:
+On each ManagedCluster create a ```ClusterClaim``` to express any cluster property.
 
-```bash
-# Add location labels
-kubectl label managedcluster cluster-eu-01 p2code.filter.location=europe
-kubectl label managedcluster cluster-us-01 p2code.filter.location=us
+Example ClusterClaim
 
-# Add distribution labels
-kubectl label managedcluster cluster-eu-01 p2code.filter.distribution=kubernetes
-kubectl label managedcluster ocp-cluster-01 p2code.filter.distribution=openshift
-
-# Add custom capability labels
-kubectl label managedcluster gpu-cluster-01 p2code.filter.has-gpu=true
-kubectl label managedcluster edge-cluster-01 p2code.filter.edge-device=true
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1alpha1
+kind: ClusterClaim
+metadata:
+  name: p2code.filter.k8sdistribution
+spec:
+  value: kubernetes
 ```
 
 ### Step 5: Install the P2Code Scheduler Operator
@@ -163,6 +138,7 @@ metadata:
   namespace: p2code-scheduler-system
 spec:
   globalAnnotations:
+    - "p2code.target.managedClusterSet=test"
     - "p2code.filter.location=europe"
   manifests:
     - apiVersion: apps/v1
@@ -227,6 +203,8 @@ metadata:
   name: multi-workload
   namespace: p2code-scheduler-system
 spec:
+  globalAnnotations:
+    - "p2code.target.managedClusterSet=test"
   workloadAnnotations:
     frontend:
       - "p2code.filter.location=europe"
@@ -313,6 +291,7 @@ metadata:
   namespace: p2code-scheduler-system
 spec:
   globalAnnotations:
+    - "p2code.target.managedClusterSet=test"
     - "p2code.filter.location=europe"
   manifests:
     # Namespace
@@ -337,7 +316,7 @@ spec:
         name: app-secrets
         namespace: myapp
       type: Opaque
-      stringData:
+      data:
         db-password: "changeme"
 
     # Service Account
@@ -602,7 +581,7 @@ manifests:
 
 ### Enabling Multi-Cluster Networking
 
-If you have the AC3 Network Operator installed, the P2Code Scheduler will automatically register network connections between workloads:
+If you have the AC3 MultiClusterNetwork Operator installed, the P2Code Scheduler will automatically register network connections between workloads:
 
 ```yaml
 spec:
@@ -678,9 +657,7 @@ metadata:
   name: my-app
   namespace: production
 
-# Avoid - defaults to 'default' namespace
-metadata:
-  name: my-app
+Scheduling will fail if a namespace isnt specified for a namespaced resource.
 ```
 
 ### 2. Resource Naming
@@ -738,7 +715,7 @@ spec:
 Always check the status after creating a scheduling manifest:
 
 ```bash
-kubectl get p2codeschedulingmanifest <name> -n p2code-scheduler-system -o jsonpath='{.status.conditions}' | jq
+kubectl get p2codeschedulingmanifest <name> -n p2code-scheduler-system -o jsonpath='{.status.state} | jq
 ```
 
 ### 6. Use Version Control

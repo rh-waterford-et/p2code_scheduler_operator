@@ -10,10 +10,9 @@ The P2Code Scheduler extends Kubernetes with custom scheduling logic that enable
 
 ### 1. Annotation-Based Cluster Filtering
 
-The operator uses a declarative annotation syntax to filter and select target clusters based on various criteria:
+The operator uses a declarative annotation syntax to filter and select a target cluster based on various criteria:
 
-#### Supported Filter Dimensions
-
+#### Creating Cluster Filters
 - **Geographic Location**: Filter clusters by physical location
   ```yaml
   p2code.filter.location=europe
@@ -43,7 +42,7 @@ The operator uses a declarative annotation syntax to filter and select target cl
 
 - **Global Annotations**: Apply filters to all manifests in a scheduling request
 - **Workload Annotations**: Apply filters to specific workloads for granular control
-- **Explicit Cluster Targeting**: Pin workloads to specific named clusters
+- **Explicit Cluster Targeting**: Pin workloads to a specific named cluster
 
 ### 2. Intelligent Resource Bundling
 
@@ -97,11 +96,11 @@ The operator provides intelligent network connectivity management for workloads 
 
 - Analyzes Pod specifications to identify external service dependencies
 - Detects service-to-service communication patterns
-- Extracts environment variables that reference Kubernetes services
+- Extracts environment variables that reference Kubernetes services in the format ```service:port```
 
-#### AC3 Network Operator Integration
+#### AC3 MultiClusterNetwork Operator Integration
 
-Integrates with the AC3 Network Operator to enable cross-cluster service discovery:
+Integrates with the AC3 MultiClusterNetwork Operator to enable cross-cluster service discovery:
 
 - **Automatic Link Registration**: When workloads with external service dependencies are scheduled, the operator automatically creates MultiClusterNetwork resources
 - **Network Topology Management**: Builds and maintains a graph of inter-cluster service connections
@@ -195,9 +194,13 @@ spec:
 Pin workloads to specific clusters by name:
 
 ```yaml
-workloadAnnotations:
-  critical-workload:
-    - "p2code.filter.clustername=prod-cluster-01"
+apiVersion: scheduling.p2code.eu/v1alpha1
+kind: P2CodeSchedulingManifest
+metadata:
+  name: explicit-cluster-targeting
+spec:
+  globalAnnotations: 
+    - "p2code.target.managedClusterSet=test"
 ```
 
 ### 6. Comprehensive Resource Type Support
@@ -209,7 +212,7 @@ The operator intelligently handles a wide range of Kubernetes and OpenShift reso
 - Pods, Deployments, StatefulSets, DaemonSets
 - Services, Endpoints, EndpointSlices
 - ConfigMaps, Secrets
-- PersistentVolumes, PersistentVolumeClaims
+- PersistentVolumeClaims
 - Jobs, CronJobs
 
 #### Networking Resources
@@ -243,12 +246,12 @@ The operator provides detailed status information through standard Kubernetes co
 
 #### Condition Types
 
-- **SchedulingInProgress**: Initial scheduling is underway
-- **SchedulingSuccessful**: All workloads successfully scheduled
-- **ScheduledWithUnreliableConnectivity**: Scheduled but network links unavailable
-- **SchedulingFailed**: Scheduling failed (with detailed reason)
-- **Misconfigured**: Invalid configuration detected
-- **SchedulingError**: Unexpected error during scheduling
+- `SchedulingInProgress`: Scheduling is underway
+- `SchedulingSuccessful`: All workloads scheduled successfully
+- `ScheduledWithUnreliableConnectivity`: Scheduled but network links unavailable
+- `SchedulingFailed`: Scheduling failed
+- `Misconfigured`: Configuration error detected
+- `Finalizing`: Clean up of previously scheduled resources is in progress
 
 #### Scheduling Decisions
 
@@ -367,7 +370,7 @@ Clusters must be organized into ManagedClusterSets with proper bindings to the o
 
 ### Network Operator Dependency
 
-Multi-cluster networking features require the AC3 Network Operator to be installed. The operator gracefully degrades if it's not available.
+Multi-cluster networking features require the AC3 MultiClusterNetwork Operator to be installed. The operator gracefully degrades if it's not available.
 
 ### OCM Dependency
 

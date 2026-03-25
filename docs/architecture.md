@@ -4,7 +4,7 @@ This document provides a comprehensive overview of the P2Code Scheduler Operator
 
 ## High-Level Architecture
 
-The P2Code Scheduler Operator is built as a Kubernetes operator using the Kubebuilder framework. It integrates with Open Cluster Management (OCM) to provide intelligent multi-cluster workload scheduling.
+The P2Code Scheduler Operator is built as a Kubernetes operator using the Kubebuilder framework. It integrates with Open Cluster Management (OCM) to provide intelligent multi-cluster workload scheduling. The scheduler also integrates with the MultiClusterNetwork operator to ensure network connectivity if dependent components are scheduled to distinct clusters.
 
 ![Architecture Diagram](../scheduler-arch.png)
 
@@ -14,7 +14,7 @@ The P2Code Scheduler Operator is built as a Kubernetes operator using the Kubebu
 ┌─────────────────────────────────────────────────────────────────┐
 │                        User / Developer                         │
 │                                                                 │
-│  Creates P2CodeSchedulingManifest with workloads + filters     │
+│  Creates P2CodeSchedulingManifest with workloads + filters      │
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              │ kubectl apply
@@ -22,44 +22,44 @@ The P2Code Scheduler Operator is built as a Kubernetes operator using the Kubebu
 ┌─────────────────────────────────────────────────────────────────┐
 │                   Kubernetes API Server                         │
 │                                                                 │
-│  - Stores P2CodeSchedulingManifest CRs                         │
-│  - Triggers reconciliation events                              │
-└────────────────────────────┬────────────────────────────────────┘
+│  - Stores P2CodeSchedulingManifest CRs                          │
+│  - Triggers reconciliation events                               |└────────────────────────────┬────────────────────────────────────┘
                              │
                              │ Watch events
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │          P2Code Scheduler Operator (Controller Manager)         │
 │                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐ │
-│  │   P2CodeSchedulingManifestReconciler                      │ │
-│  │                                                           │ │
-│  │   Main reconciliation loop orchestrating:                │ │
-│  │   1. Validation                                           │ │
-│  │   2. Analysis & Bundling                                  │ │
-│  │   3. Placement Creation                                   │ │
-│  │   4. ManifestWork Distribution                            │ │
-│  │   5. Status Updates                                       │ │
-│  └───────────┬───────────────────────────────────────────────┘ │
-│              │                                                   │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │   P2CodeSchedulingManifestReconciler                      │  │
+│  │                                                           │  │
+│  │   Main reconciliation loop orchestrating:                 │  |
+│  │   1. Validation                                           │  │
+│  │   2. Analysis & Bundling                                  │  │
+│  │   3. Placement Creation                                   │  │
+│  │   4. ManifestWork Distribution                            |  |
+|  |   5. Network Link Creation                                │  │
+│  │   6. Status Updates                                       │  │
+│  └───────────┬───────────────────────────────────────────────┘  │
+│              │                                                  │
 │              │ Delegates to                                     │
-│              ▼                                                   │
-│  ┌──────────────────────┐  ┌──────────────────────┐            │
-│  │  Annotation Parser   │  │  Membership Validator│            │
-│  │  (annotations.go)    │  │  (membership.go)     │            │
-│  └──────────────────────┘  └──────────────────────┘            │
-│              │                                                   │
-│              ▼                                                   │
-│  ┌──────────────────────┐  ┌──────────────────────┐            │
-│  │  Resource Analyzer   │  │  Bundle Manager      │            │
-│  │  (analyse.go)        │  │  (bundle.go)         │            │
-│  └──────────────────────┘  └──────────────────────┘            │
-│              │                                                   │
-│              ▼                                                   │
-│  ┌──────────────────────┐  ┌──────────────────────┐            │
-│  │  Network Connectivity│  │  Status Manager      │            │
-│  │  (network-*.go)      │  │  (status.go)         │            │
-│  └──────────────────────┘  └──────────────────────┘            │
+│              ▼                                                  │
+│  ┌──────────────────────┐  ┌──────────────────────┐             │
+│  │  Annotation Parser   │  │  Membership Validator│             │
+│  │  (annotations.go)    │  │  (membership.go)     │             │
+│  └──────────────────────┘  └──────────────────────┘             │
+│              │                                                  │
+│              ▼                                                  │
+│  ┌──────────────────────┐  ┌──────────────────────┐             │
+│  │  Resource Analyzer   │  │  Bundle Manager      │             │
+│  │  (analyse.go)        │  │  (bundle.go)         │             │
+│  └──────────────────────┘  └──────────────────────┘             │
+│              │                                                  │
+│              ▼                                                  │
+│  ┌──────────────────────┐  ┌──────────────────────┐             │
+│  │  Network Connectivity│  │  Status Manager      │             │
+│  │  (network-*.go)      │  │  (status.go)         │             │
+│  └──────────────────────┘  └──────────────────────┘             │
 └─────────────────────────────┬───────────────────────────────────┘
                               │
                               │ Creates & Manages
@@ -67,13 +67,13 @@ The P2Code Scheduler Operator is built as a Kubernetes operator using the Kubebu
 ┌─────────────────────────────────────────────────────────────────┐
 │              Open Cluster Management (OCM)                      │
 │                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐ │
-│  │  Placement   │  │ Placement    │  │   ManifestWork       │ │
-│  │  Resources   │─▶│ Decisions    │  │   Resources          │ │
-│  │              │  │              │  │                      │ │
-│  │ Cluster      │  │ Selected     │  │ Workload bundles to  │ │
-│  │ selection    │  │ clusters     │  │ deploy               │ │
-│  └──────────────┘  └──────────────┘  └──────────┬───────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │  Placement   │  │ Placement    │  │   ManifestWork       │   │
+│  │  Resources   │─▶│ Decisions   │  │   Resources          │   │
+│  │              │  │              │  │                      │   │
+│  │ Cluster      │  │ Selected     │  │ Workload bundles to  │   │
+│  │ selection    │  │ clusters     │  │ deploy               │   │
+│  └──────────────┘  └──────────────┘  └──────────┬───────────┘   │
 └───────────────────────────────────────────────────┼─────────────┘
                                                     │
                                                     │ Distributes
@@ -81,20 +81,20 @@ The P2Code Scheduler Operator is built as a Kubernetes operator using the Kubebu
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Managed Clusters                             │
 │                                                                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐ │
-│  │  Cluster 1   │  │  Cluster 2   │  │   Cluster N          │ │
-│  │              │  │              │  │                      │ │
-│  │ Workloads    │  │ Workloads    │  │   Workloads          │ │
-│  │ deployed     │  │ deployed     │  │   deployed           │ │
-│  └──────────────┘  └──────────────┘  └──────────────────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
+│  │  Cluster 1   │  │  Cluster 2   │  │   Cluster N          │   │
+│  │              │  │              │  │                      │   │
+│  │ Workloads    │  │ Workloads    │  │   Workloads          │   │
+│  │ deployed     │  │ deployed     │  │   deployed           │   │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               │ Optional: Multi-cluster networking
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│              AC3 Network Operator (Optional)                    │
+│              AC3 MultiClusterNetwork Operator (Optional)                    │
 │                                                                 │
-│  Manages MultiClusterNetwork resources for service discovery   │
+│  Manages MultiClusterNetwork resources for service discovery    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -133,9 +133,7 @@ spec:
       kind: Deployment
       # ... deployment spec
 status:
-  conditions:
-    - type: SchedulingSuccessful
-      status: "True"
+  state: SchedulingSuccessful
   decisions:
     - workload: my-deployment
       cluster: cluster-eu-01
@@ -242,7 +240,7 @@ func extractExternalServices(podSpec *corev1.PodSpec) []string
 - **RBAC**: ServiceAccount, Role, ClusterRole, RoleBinding, ClusterRoleBinding
 - **Autoscaling**: HorizontalPodAutoscaler (v1, v2, v2beta1, v2beta2)
 - **Monitoring**: ServiceMonitor (Prometheus Operator)
-- **Storage**: PersistentVolume, PersistentVolumeClaim
+- **Storage**: PersistentVolumeClaim
 
 #### Bundle Manager (`bundle.go`)
 
@@ -318,7 +316,7 @@ func validateClusterSetMembership(ctx context.Context, client client.Client, clu
 **Responsibilities**:
 - Analyzes external service dependencies between workloads
 - Creates MultiClusterNetwork resources for cross-cluster communication
-- Registers network links with AC3 Network Operator
+- Registers network links with AC3 MultiClusterNetwork Operator
 - Handles graceful degradation if network operator not installed
 
 **Key Functions**:
@@ -336,8 +334,12 @@ metadata:
   name: frontend-to-backend-link
 spec:
   sourceCluster: cluster-eu-01
+  sourceNamespace: namespace1
   targetCluster: cluster-us-01
-  service: backend-service
+  targetNamespace: namespace2
+  services:
+    - name: backend-service
+      port: 300
 ```
 
 #### Status Manager (`status.go`)
@@ -354,12 +356,11 @@ spec:
 - `ScheduledWithUnreliableConnectivity`: Scheduled but network links unavailable
 - `SchedulingFailed`: Scheduling failed
 - `Misconfigured`: Configuration error detected
-- `SchedulingError`: Unexpected error occurred
+- `Finalizing`: Clean up of previously scheduled resources is in progress
 
 **Key Functions**:
 ```go
 func setCondition(manifest *v1alpha1.P2CodeSchedulingManifest, conditionType, reason, message string)
-func recordDecision(manifest *v1alpha1.P2CodeSchedulingManifest, workload, cluster string)
 ```
 
 #### Utilities (`utils/utils.go`)
@@ -411,7 +412,7 @@ func IsMultiClusterNetworkInstalled(ctx context.Context, client client.Client) b
    ↓
 8. Network Registration Phase
    ├─ Analyze inter-workload dependencies
-   ├─ Check if AC3 Network Operator installed
+   ├─ Check if AC3 MultiClusterNetwork Operator installed
    ├─ Create MultiClusterNetwork resources
    └─ Update status based on network availability
    ↓
@@ -552,7 +553,7 @@ spec:
       - # Kubernetes manifest
 ```
 
-### 2. AC3 Network Operator
+### 2. AC3 MultiClusterNetwork Operator
 
 **MultiClusterNetwork**:
 ```yaml
@@ -561,16 +562,20 @@ kind: MultiClusterNetwork
 metadata:
   name: service-link
 spec:
-  sourceCluster: cluster-1
-  targetCluster: cluster-2
-  service: backend-service
+  sourceCluster: cluster-eu-01
+  sourceNamespace: namespace1
+  targetCluster: cluster-us-01
+  targetNamespace: namespace2
+  services:
+    - name: backend-service
+      port: 300
 ```
 
 ## Deployment Architecture
 
 ### Namespace Requirement
 
-All operations are scoped to the `p2code-scheduler-system` namespace:
+All operations are scoped to the `p2code-scheduler-system` namespace, all `P2CodeSchedulingManifests` must be deployed into this namespace to be processed properly. In addition, cluster administrators must bind approved `ManagedClusterSets` to the `p2code-scheduler-system` namespace to permit workloads to be scheduled to these clusters.
 
 ```yaml
 apiVersion: v1
@@ -715,4 +720,4 @@ r.Recorder.Event(manifest, corev1.EventTypeNormal, "SchedulingSuccessful", "All 
 
 ## Summary
 
-The P2Code Scheduler Operator is architected as a cloud-native Kubernetes controller following established patterns and best practices. Its modular design separates concerns, making it maintainable and extensible. Deep integration with OCM and optional integration with the AC3 Network Operator provide a complete multi-cluster scheduling solution.
+The P2Code Scheduler Operator is architected as a cloud-native Kubernetes controller following established patterns and best practices. Its modular design separates concerns, making it maintainable and extensible. Deep integration with OCM and optional integration with the AC3 MultiClusterNetwork Operator provide a complete multi-cluster scheduling solution.
