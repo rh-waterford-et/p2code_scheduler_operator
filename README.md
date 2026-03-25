@@ -2,6 +2,8 @@
 
 A Kubernetes operator that provides intelligent multi-cluster workload scheduling through declarative, annotation-based placement policies. Built on Open Cluster Management (OCM), the P2Code Scheduler enables organizations to distribute workloads across federated clusters based on location, capabilities, and resource availability.
 
+> [P2CODE](https://p2code-project.eu/) has received funding from the European Union under grant agreement No. 101093069.
+
 ## Overview
 
 The P2Code Scheduler Operator extends Kubernetes with custom scheduling logic for multi-cluster environments. It allows you to define placement constraints using simple annotations and automatically handles workload bundling, dependency resolution, and cross-cluster network connectivity.
