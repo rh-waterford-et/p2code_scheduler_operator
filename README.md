@@ -2,6 +2,8 @@
 
 A Kubernetes operator that provides intelligent multi-cluster workload scheduling through declarative, annotation-based placement policies. Built on Open Cluster Management (OCM), the P2Code Scheduler enables organizations to distribute workloads across federated clusters based on location, capabilities, and resource availability.
 
+> [P2CODE](https://p2code-project.eu/) has received funding from the European Union under grant agreement No. 101093069.
+
 ## Overview
 
 The P2Code Scheduler Operator extends Kubernetes with custom scheduling logic for multi-cluster environments. It allows you to define placement constraints using simple annotations and automatically handles workload bundling, dependency resolution, and cross-cluster network connectivity.
@@ -10,7 +12,7 @@ The P2Code Scheduler Operator extends Kubernetes with custom scheduling logic fo
 
 - **Annotation-Based Filtering**: Schedule workloads using declarative filter annotations (`p2code.filter.location=europe`)
 - **Intelligent Bundling**: Automatically groups related resources (deployments, services, configmaps, secrets, RBAC)
-- **Multi-Cluster Networking**: Integrates with AC3 Network Operator for cross-cluster service discovery
+- **Multi-Cluster Networking**: Integrates with AC3 MultiClusterNetwork Operator for cross-cluster service discovery
 - **Flexible Scheduling**: Global or per-workload placement policies
 - **OCM Integration**: Leverages Open Cluster Management for cluster federation and workload distribution
 - **Comprehensive Resource Support**: Handles Kubernetes core resources, OpenShift Routes, HPA, Prometheus ServiceMonitors, and more
@@ -25,6 +27,7 @@ metadata:
   namespace: p2code-scheduler-system
 spec:
   globalAnnotations:
+    - "p2code.target.managedClusterSet=test"
     - "p2code.filter.location=europe"
     - "p2code.filter.has-gpu=true"
   manifests:
@@ -66,7 +69,7 @@ This manifest schedules the `ml-service` deployment and its service to all Europ
 - ManagedClusterSet configured with proper bindings
 
 **Optional:**
-- AC3 Network Operator (for multi-cluster networking features)
+- AC3 MultiClusterNetwork Operator (for multi-cluster networking features)
 - Prometheus Operator (for ServiceMonitor support)
 
 See the [Getting Started Guide](docs/getting-started.md) for detailed installation instructions.
@@ -90,7 +93,7 @@ The operator analyzes your manifests and automatically includes:
 - Required namespaces
 
 ### Multi-Cluster Networking
-Integrates with AC3 Network Operator to:
+Integrates with AC3 MultiClusterNetwork Operator to:
 - Detect cross-cluster service dependencies
 - Automatically register network links
 - Enable service discovery across clusters
@@ -193,6 +196,7 @@ metadata:
   namespace: p2code-scheduler-system
 spec:
   globalAnnotations:
+    - "p2code.target.managedClusterSet=test"
     - "p2code.filter.location=europe"
   manifests:
     - apiVersion: apps/v1
@@ -209,6 +213,8 @@ metadata:
   name: multi-tier-app
   namespace: p2code-scheduler-system
 spec:
+  globalAnnotations:
+    - "p2code.target.managedClusterSet=test"
   workloadAnnotations:
     frontend:
       - "p2code.filter.location=europe"
@@ -266,7 +272,7 @@ The P2Code Scheduler Operator is built using the Kubebuilder framework and integ
 - **P2CodeSchedulingManifest Controller**: Main reconciliation loop
 - **Resource Analyzer**: Deep introspection of Kubernetes manifests
 - **Bundle Manager**: Groups related resources for deployment
-- **Network Connectivity Manager**: Integrates with AC3 Network Operator
+- **Network Connectivity Manager**: Integrates with AC3 MultiClusterNetwork Operator
 - **OCM Integration**: Leverages Placement and ManifestWork APIs
 
 See the [Architecture documentation](docs/architecture.md) for detailed component descriptions and data flow diagrams.
