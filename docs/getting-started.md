@@ -484,10 +484,7 @@ kubectl logs -n p2code-scheduler-system deployment/p2code-scheduler-controller-m
 **Symptoms**: Status shows "No matching clusters"
 
 **Solution**:
-1. Verify cluster labels match your filter annotations:
-   ```bash
-   kubectl get managedclusters --show-labels
-   ```
+1. Verify cluster labels match your filter annotations. Run the ```list-labeled-cluster.sh``` script to view the ```p2code``` labels assigned to each ```ManagedCluster```.
 2. Check that ManagedClusterSet is properly configured
 3. Verify ManagedClusterSetBinding exists in `p2code-scheduler-system` namespace
 
